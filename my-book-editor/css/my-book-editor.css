@@ -1,0 +1,74 @@
+/* Custom CSS for Book Editor */
+/* TinyMCE editor customizations */
+.wp-editor-wrap {
+    border-radius: 0 !important;
+    border: 1px solid #d1d5db !important; /* Tailwind gray-300 equivalent */
+}
+
+.wp-editor-area {
+    border-radius: 0 !important;
+    border: none !important;
+}
+
+/* Remove max-width limitation on forms */
+#book-editor-form {
+    max-width: none !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+}
+
+/* Ensure all form elements take full width */
+#book-editor-form input,
+#book-editor-form select,
+#book-editor-form textarea {
+    max-width: 100% !important;
+}
+
+/* Hide scrollbar for sidebar */
+.hide-scrollbar {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE and Edge */
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+    display: none; /* Chrome, Safari, Opera */
+}
+
+/* Smooth transitions */
+.transition-colors {
+    transition-property: color, background-color, border-color;
+    transition-duration: 150ms;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Generate button: loading state (n8n request in flight) */
+.mbe-generate-btn.mbe-generate-btn--busy {
+    cursor: wait;
+    opacity: 0.92;
+}
+
+.mbe-generate-btn .mbe-btn-spinner {
+    display: none;
+    width: 1em;
+    height: 1em;
+    margin-right: 0.35em;
+    vertical-align: -0.125em;
+    border: 2px solid rgba(55, 65, 81, 0.35);
+    border-top-color: rgba(17, 24, 39, 0.9);
+    border-radius: 50%;
+    animation: mbe-spin 0.65s linear infinite;
+}
+
+.mbe-generate-btn.mbe-generate-btn--busy .mbe-btn-spinner {
+    display: inline-block;
+}
+
+@keyframes mbe-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}

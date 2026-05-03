@@ -1,0 +1,79 @@
+/* Author Dashboard v3 — refinements beyond Tailwind CDN (visual only). */
+
+.wp-editor-wrap {
+    border-radius: 0.75rem !important;
+    border: 1px solid #e5e7eb !important;
+    overflow: hidden;
+    box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.05);
+}
+.wp-editor-area {
+    border-radius: 0 !important;
+    border: none !important;
+}
+
+/* Form shell: let inner cards control width */
+#author-editor-form {
+    max-width: none !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+}
+
+#author-editor-form input,
+#author-editor-form select,
+#author-editor-form textarea {
+    max-width: 100% !important;
+}
+
+/* Book / author fields: clearer focus ring (matches Tailwind ring) */
+.mae-dashboard-input:focus {
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+}
+
+/* Generate CTA: pulse while request is in flight (button is disabled by existing JS) */
+#start_full_automation:disabled {
+    animation: mae-btn-pulse 1.25s ease-in-out infinite;
+}
+@keyframes mae-btn-pulse {
+    0%,
+    100% {
+        filter: brightness(1);
+        box-shadow: 0 10px 15px -3px rgba(79, 70, 229, 0.35), 0 4px 6px -2px rgba(79, 70, 229, 0.15);
+    }
+    50% {
+        filter: brightness(1.06);
+        box-shadow: 0 12px 20px -3px rgba(79, 70, 229, 0.45), 0 6px 8px -2px rgba(79, 70, 229, 0.2);
+    }
+}
+
+/* Fallback: selection cards when peer utilities are unavailable in build */
+#task_author_intro:checked + span,
+#task_book_intro:checked + span,
+#task_chapter_vocab:checked + span,
+#task_chapter_quiz:checked + span,
+#task_chapter_synopsis:checked + span,
+#task_midterm:checked + span,
+#task_final:checked + span,
+#task_class_activities:checked + span,
+#task_projects:checked + span {
+    border-color: #6366f1 !important;
+    background-color: #eef2ff !important;
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.08);
+}
+
+/* Segmented difficulty: selected segment */
+input[name="difficulty_level"]:checked + span {
+    background-color: #fff !important;
+    color: #111827 !important;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+}
+
+/* Document preview textarea: paper-like */
+.mae-doc-preview-textarea {
+    line-height: 1.65;
+}
+
+/* Automation CTA: match Content Endpoint (lesson) flat gray .button-primary; avoid overriding core .button */
