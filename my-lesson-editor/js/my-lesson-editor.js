@@ -75,14 +75,14 @@ jQuery(document).ready(function($) {
             }
             selected.push(typeLabels[key] || key);
         });
-        $('#selected-count').text(selected.length + ' selected');
+        $('#selected-count').text(selected.length);
         if (!selected.length) {
-            $('#selected-types').html('<span class="text-gray-500 italic">' + 'None' + '</span>');
+            $('#selected-types').html('<span class="caast-meta italic">None selected</span>');
         } else {
             $('#selected-types').html(
-                '<div class="flex flex-wrap gap-1">' +
+                '<div class="flex flex-wrap gap-1.5">' +
                 selected.map(function(l) {
-                    return '<span class="inline-block bg-white border border-gray-200 px-2 py-0.5 rounded text-gray-800">' + $('<div/>').text(l).html() + '</span>';
+                    return '<span class="inline-block bg-blue-50 border border-blue-200 text-blue-800 px-2 py-0.5 rounded-full text-xs font-medium">' + $('<div/>').text(l).html() + '</span>';
                 }).join('') +
                 '</div>'
             );
@@ -154,7 +154,12 @@ jQuery(document).ready(function($) {
                 $('#lesson_post_id').val(d.lesson_post_id || '');
                 $('#new_lesson_name').val(d.lesson_name || '');
                 $('#lesson_subtitle').val(d.lesson_subtitle || '');
-                $('#placement_category').val(d.placement_category || '');
+                var placements = Array.isArray(d.placement_category)
+                    ? d.placement_category
+                    : (d.placement_category ? [d.placement_category] : []);
+                $('.caast-placement-checkbox').each(function() {
+                    $(this).prop('checked', placements.indexOf($(this).val()) !== -1);
+                });
                 $('#lesson_category').val(d.lesson_categories || '');
                 $('#lesson_level').val(d.lesson_levels || '');
                 $('#selected_author_id').val(d.associated_author_id ? String(d.associated_author_id) : '');
@@ -252,10 +257,11 @@ jQuery(document).ready(function($) {
         var lessonTitle = ($('#new_lesson_name').val() || '').trim();
         var lessonSubtitle = ($('#lesson_subtitle').val() || '').trim();
 
-        var difficulty = ($('#lesson_level').val() || '').trim();
+        var difficulty = ($('#ai_difficulty_level').val() || $('#lesson_level').val() || 'regular').trim();
         if (!difficulty) {
-            difficulty = 'intermediate';
+            difficulty = 'regular';
         }
+        var gradeLevel = ($('#grade_level').val() || 'middle_school').trim();
         var lessonCategory = ($('#lesson_category').val() || '').trim();
 
         var payload = {
@@ -268,6 +274,7 @@ jQuery(document).ready(function($) {
             lesson_title: lessonTitle,
             lesson_subtitle: lessonSubtitle,
             difficulty_level: difficulty,
+            grade_level: gradeLevel,
             lesson_category: lessonCategory,
             task_quantities: {
                 quiz: { mc_qty: 10, short_answer_qty: 4, discussion_questions_count: 0 },
@@ -309,25 +316,33 @@ jQuery(document).ready(function($) {
             if (response && response.success && response.data) {
                 var d = response.data;
                 var n8n = d.n8n_response;
-                var title = d.final_title || '';
-                var content = d.final_content || '';
+                var title = (d.final_title || '').trim();
+                var content = (d.final_content != null && d.final_content !== '') ? String(d.final_content) : '';
                 if (!title && n8n && typeof n8n === 'object') {
-                    title = n8n.final_title || n8n.title || (n8n.data && (n8n.data.final_title || n8n.data.title)) || payload.book_name;
+                    title = n8n.final_title || n8n.title || n8n.lesson_title || n8n.book_title
+                        || (n8n.data && (n8n.data.final_title || n8n.data.title || n8n.data.lesson_title)) || '';
                 }
                 if (!content && n8n) {
                     if (typeof n8n === 'string') {
                         content = n8n;
-                    } else {
-                        content = n8n.final_content || n8n.content || (n8n.data && (n8n.data.final_content || n8n.data.content)) || '';
+                    } else if (typeof n8n === 'object') {
+                        content = n8n.final_content || n8n.content || n8n.lesson_content || n8n.text || n8n.result
+                            || (n8n.data && (n8n.data.final_content || n8n.data.content || n8n.data.lesson_content)) || '';
                         if (!content && n8n.output && typeof n8n.output === 'string') {
                             try {
                                 var parsed = JSON.parse(n8n.output);
-                                content = parsed.content || parsed.final_content || '';
-                                if (!title && (parsed.title || parsed.final_title)) {
-                                    title = parsed.title || parsed.final_title;
+                                content = parsed.final_content || parsed.content || parsed.lesson_content || '';
+                                if (!title && (parsed.final_title || parsed.title || parsed.lesson_title)) {
+                                    title = parsed.final_title || parsed.title || parsed.lesson_title;
                                 }
                             } catch (ignore) {
                                 content = n8n.output;
+                            }
+                        }
+                        if (!content && Array.isArray(n8n) && n8n[0] && typeof n8n[0] === 'object') {
+                            content = n8n[0].final_content || n8n[0].content || '';
+                            if (!title) {
+                                title = n8n[0].final_title || n8n[0].title || '';
                             }
                         }
                         if (!content) {
@@ -335,8 +350,9 @@ jQuery(document).ready(function($) {
                         }
                     }
                 }
-                $('#final_generated_title').val(title || payload.book_name);
+                $('#final_generated_title').val(title || payload.book_name || payload.lesson_title || '');
                 $('#final_generated_content').val(content || '');
+                $('#full_automation_status').removeClass('hidden');
                 $('#full_automation_status').removeClass('bg-gray-100 text-gray-800 bg-red-100 text-red-800').addClass('bg-green-50 text-green-900 border border-green-200').text(d.message || 'Automation finished.');
             } else {
                 $('#full_automation_status').removeClass('bg-gray-100 bg-green-50 text-green-900').addClass('bg-red-50 text-red-900 border border-red-200').text(formatAjaxError(response && response.data));
@@ -384,6 +400,73 @@ jQuery(document).ready(function($) {
         }
     });
 
+    function isLessonEditorPage() {
+        return $('#lesson-editor-form').length > 0;
+    }
+
+    function refreshLessonDraftTitleSelect(selectedId) {
+        if (!isLessonEditorPage()) {
+            return $.Deferred().resolve().promise();
+        }
+        return $.ajax({
+            url: mle.ajaxurl,
+            type: 'POST',
+            dataType: 'json',
+            data: {
+                action: 'my_lesson_editor_get_draft_titles',
+                nonce: mle.nonce
+            }
+        }).done(function(response) {
+            if (!response || !response.success || !response.data || !Array.isArray(response.data.drafts)) {
+                return;
+            }
+            var $sel = $('#mle_select_title_ce');
+            if (!$sel.length) {
+                return;
+            }
+            var current = selectedId || $sel.val();
+            var titleCounts = {};
+            response.data.drafts.forEach(function(draft) {
+                var key = (draft.title || '').toLowerCase();
+                titleCounts[key] = (titleCounts[key] || 0) + 1;
+            });
+            $sel.find('option:not(:first)').remove();
+            response.data.drafts.forEach(function(draft) {
+                var label = (draft.title || 'Untitled') + ' (' + (draft.status || 'draft') + ')';
+                if (titleCounts[(draft.title || '').toLowerCase()] > 1) {
+                    label += ' #' + draft.id;
+                }
+                $sel.append($('<option>', { value: String(draft.id), text: label }));
+            });
+            if (current) {
+                $sel.val(String(current));
+            }
+            if ($sel.val()) {
+                $('#mle_draft_selection_container').removeClass('hidden');
+            }
+        });
+    }
+
+    function upsertLessonDraftTitleOption(postId, title, status) {
+        if (!isLessonEditorPage()) {
+            return;
+        }
+        var $sel = $('#mle_select_title_ce');
+        var id = String(postId);
+        var label = (title || 'Untitled') + ' (' + (status || 'draft') + ')';
+        var $existing = $sel.find('option[value="' + id + '"]');
+        if ($existing.length) {
+            $existing.text(label);
+        } else {
+            $sel.append($('<option>', { value: id, text: label }));
+        }
+        $sel.val(id);
+        $('#mle_draft_selection_container').removeClass('hidden');
+        $('#mle_select_draft_ce').val('main');
+    }
+
+    window.mleRefreshDraftTitles = refreshLessonDraftTitleSelect;
+
     $('#save_final_content_as_draft').on('click', function(e) {
         e.preventDefault();
         var title = ($('#final_generated_title').val() || '').trim();
@@ -409,9 +492,17 @@ jQuery(document).ready(function($) {
             contentType: false,
             dataType: 'json'
         }).done(function(res) {
-            if (res && res.success) {
+            if (res && res.success && res.data) {
+                var postId = res.data.post_id;
+                var postTitle = res.data.post_title || title;
+                var postStatus = res.data.post_status || 'draft';
+                upsertLessonDraftTitleOption(postId, postTitle, postStatus);
+                if (window.mleRefreshLessonTree) {
+                    window.mleRefreshLessonTree(postId);
+                }
+                $(document).trigger('mle:drafts-changed', [postId]);
                 if (typeof Swal !== 'undefined') {
-                    Swal.fire({ icon: 'success', title: 'Draft saved', text: res.data && res.data.message ? res.data.message : 'OK' });
+                    Swal.fire({ icon: 'success', title: 'Draft saved', text: res.data.message || 'Draft added to Generated Drafts.' });
                 } else {
                     alert('Saved');
                 }
@@ -425,8 +516,8 @@ jQuery(document).ready(function($) {
 
     $('#load_content_to_editor_from_draft').on('click', function(e) {
         e.preventDefault();
-        var postId = $('#select_title_ce').val();
-        var draftType = ($('#select_draft_ce').val() || '').trim();
+        var postId = $('#mle_select_title_ce').val();
+        var draftType = ($('#mle_select_draft_ce').val() || '').trim();
         if (!postId) {
             if (typeof Swal !== 'undefined') {
                 Swal.fire({ icon: 'error', title: 'Select a title', text: 'Choose a lesson from the list.' });
@@ -470,13 +561,21 @@ jQuery(document).ready(function($) {
         });
     });
 
-    $('#select_title_ce').on('change', function() {
+    $('#mle_select_title_ce').on('change', function() {
         if ($(this).val()) {
-            $('#draft_selection_container').removeClass('hidden');
+            $('#mle_draft_selection_container').removeClass('hidden');
         } else {
-            $('#draft_selection_container').addClass('hidden');
+            $('#mle_draft_selection_container').addClass('hidden');
         }
     });
+
+    $(document).on('mle:drafts-changed', function(e, selectedId) {
+        refreshLessonDraftTitleSelect(selectedId);
+    });
+
+    if (isLessonEditorPage()) {
+        refreshLessonDraftTitleSelect();
+    }
 
     /* Optional: show filename for book upload */
     $('#book_upload').on('change', function() {
@@ -490,5 +589,82 @@ jQuery(document).ready(function($) {
             name = '';
         }
         $('#book_upload_status').text(name ? ('Selected: ' + name) : '');
+    });
+
+    /* --- AcademyLM block: course list + reusable Upload/Edit/Submit --- */
+    function loadAcademyLMCourses(forceRefresh) {
+        var $select = $('#select_academylm_course');
+        if (!$select.length) {
+            return;
+        }
+        var current = $select.val();
+        $select.prop('disabled', true).empty().append($('<option/>').val('').text('Loading courses…'));
+        $.ajax({
+            url: mle.ajaxurl,
+            type: 'POST',
+            dataType: 'json',
+            data: {
+                action: 'mle_get_courses',
+                nonce: mle.nonce,
+                _force: forceRefresh ? 1 : 0
+            }
+        }).done(function(res) {
+            $select.empty();
+            $select.append($('<option/>').val('').text('-- Select a Course --'));
+            if (res && res.success && res.data && Array.isArray(res.data.courses) && res.data.courses.length) {
+                res.data.courses.forEach(function(c) {
+                    $select.append($('<option/>').val(c.id).text(c.title + (res.data.remote ? '' : ' [local]')));
+                });
+                if (current) {
+                    $select.val(String(current));
+                }
+            } else {
+                $select.append($('<option/>').val('').text('No courses found'));
+            }
+        }).fail(function() {
+            $select.empty().append($('<option/>').val('').text('Failed to load courses'));
+        }).always(function() {
+            $select.prop('disabled', false);
+        });
+    }
+
+    if (window.MLEUploader && typeof MLEUploader.attach === 'function') {
+        var $lessonContainer = $('[data-mle-uploader="lesson"]');
+        if ($lessonContainer.length) {
+            window.__mleLessonUploader = MLEUploader.attach({
+                container: $lessonContainer.get(0),
+                ajaxConfig: { ajaxurl: mle.ajaxurl, nonce: mle.nonce },
+                actions: {
+                    extract: 'mle_extract_text_from_upload',
+                    submit:  'mle_submit_to_academylm'
+                },
+                editorId: 'lesson_content',
+                titleInputId: 'new_lesson_name',
+                courseSelectId: 'select_academylm_course',
+                bookNameInputId: 'mle_source_book_name',
+                previewSourceId: 'final_generated_content',
+                onSubmitted: function(data) {
+                    if (data && data.lesson_id) {
+                        $('[data-mle-uploader="lesson"] [data-mle-status]').append(' (Lesson ID: ' + data.lesson_id + ')');
+                    }
+                }
+            });
+        }
+
+        $('#refresh-academylm-courses').on('click', function(e) {
+            e.preventDefault();
+            loadAcademyLMCourses(true);
+        });
+
+        loadAcademyLMCourses(false);
+    }
+
+    /* If AI generation finishes, mirror the generated title into the Book Name field */
+    $(document).on('blur change', '#final_generated_title', function() {
+        var v = ($(this).val() || '').trim();
+        var $bn = $('#mle_source_book_name');
+        if (v && $bn.length && !$bn.val()) {
+            $bn.val(v);
+        }
     });
 });

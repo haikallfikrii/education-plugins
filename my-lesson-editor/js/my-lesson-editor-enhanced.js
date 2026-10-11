@@ -656,7 +656,7 @@ $(document).on('click', '.mle-download-btn', function(e) {
         })
     })
     .then(function(resp) {
-        if (!resp.ok) throw new Error('Gagal mengunduh file!');
+        if (!resp.ok) throw new Error('Failed to download file.');
         var disp = resp.headers.get('Content-Disposition');
         var filename = 'item-download.pdf';
         if (disp && disp.indexOf('filename=')!==-1) {
@@ -677,7 +677,7 @@ $(document).on('click', '.mle-download-btn', function(e) {
         }, 200);
     })
     .catch(function(err) {
-        alert('Gagal download file. Silakan coba lagi.');
+        alert('Failed to download file. Please try again.');
     })
     .finally(function() {
         $btn.removeClass('loading').prop('disabled', false);

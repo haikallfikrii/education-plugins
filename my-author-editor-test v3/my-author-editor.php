@@ -3,7 +3,7 @@
 Plugin Name: My Author Editor (Test Version)
 Plugin URI:  https://example.com/
 Description: Author Content Editor v3. Shortcodes: [mae_v3_author_dashboard], [author_dashboard_v3], or legacy [my_author_editor_test].
-Version:     1.3.3
+Version:     1.4.0
 Author:      Muhamad Fikri Haikal
 Author URI:  https://caastedu.com/
 License:     GPL2
@@ -51,7 +51,7 @@ $mae_v3_shortcode_used = false;
 
 // Define plugin constants (MAE_V3_ prefix avoids clashes with other plugin versions loaded alongside).
 if ( ! defined( 'MAE_V3_VERSION' ) ) {
-    define( 'MAE_V3_VERSION', '1.3.3' );
+    define( 'MAE_V3_VERSION', '1.4.0' );
 }
 if ( ! defined( 'MAE_V3_PLUGIN_URL' ) ) {
     define( 'MAE_V3_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
@@ -127,7 +127,12 @@ function mae_v3_register_cpt() {
         'exclude_from_search'   => false,
         'publicly_queryable'    => true,
         'capability_type'       => 'post',
-        'show_in_rest'          => true, // Enable for Gutenberg or REST API usage
+        'show_in_rest'          => true,
+        'rewrite'               => array(
+            'slug'       => 'author',
+            'with_front' => false,
+        ),
+        'has_archive'           => false,
     );
     register_post_type( 'author_profile', $args );
 }
@@ -259,6 +264,9 @@ function mae_v3_add_default_placement_terms() {
         'Blog Post Insert',
         'Landing Page',
         'Home Left Section 1',
+        'Home Left Foot Images',
+        'Home Right Section 1',
+        'Home Right Section Images',
         'Home Left Section 2',
         'Home Right List 1',
         'Home Right List 2',
@@ -278,6 +286,7 @@ function mae_v3_add_default_placement_terms() {
         }
     }
 }
+add_action( 'init', 'mae_v3_add_default_placement_terms', 20 );
 
 /**
  * Enqueue plugin assets (CSS and JS)
@@ -286,18 +295,28 @@ if ( ! function_exists( 'mae_v3_load_assets' ) ) {
 function mae_v3_load_assets() {
     global $mae_v3_shortcode_used;
 
-    // Enqueue Tailwind CSS for basic styling
-    wp_enqueue_style( 'mae_v3-tailwind', 'https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css', array(), null );
+    // Enqueue Tailwind CSS and Inter font for dashboard styling
+    wp_enqueue_style( 'mae_v3-tailwind', 'https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css', array(), '2.2.19' );
+    wp_enqueue_style( 'mae_v3-inter-font', 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap', array(), null );
+    wp_enqueue_style( 'font-awesome', 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css', array(), '5.15.4' );
 
     // Enqueue Select2 CSS (if not already enqueued by another plugin)
     wp_enqueue_style( 'select2', 'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css', array(), '4.1.0-rc.0' );
 
-    // Optional: reuse lesson editor utility CSS when that plugin is active (visual parity, no duplicate handle).
-    if ( defined( 'MY_LESSON_EDITOR_VERSION' ) && defined( 'MY_LESSON_EDITOR_PLUGIN_URL' ) && ! wp_style_is( 'my-lesson-editor-style', 'enqueued' ) ) {
+    // Shared CAASTEdu design system (from sibling my-lesson-editor plugin when present)
+    $caast_design_css = WP_PLUGIN_DIR . '/my-lesson-editor/css/my-lesson-editor.css';
+    if ( file_exists( $caast_design_css ) && ! wp_style_is( 'my-lesson-editor-style', 'enqueued' ) ) {
+        wp_enqueue_style(
+            'mae-v3-caast-design',
+            plugins_url( 'my-lesson-editor/css/my-lesson-editor.css' ),
+            array( 'mae_v3-tailwind' ),
+            filemtime( $caast_design_css )
+        );
+    } elseif ( defined( 'MY_LESSON_EDITOR_VERSION' ) && defined( 'MY_LESSON_EDITOR_PLUGIN_URL' ) && ! wp_style_is( 'my-lesson-editor-style', 'enqueued' ) ) {
         wp_enqueue_style(
             'mae-v3-lesson-editor-mirror',
             MY_LESSON_EDITOR_PLUGIN_URL . 'css/my-lesson-editor.css',
-            array(),
+            array( 'mae_v3-tailwind' ),
             MY_LESSON_EDITOR_VERSION
         );
     }
@@ -318,18 +337,49 @@ function mae_v3_load_assets() {
         'n8n_main_webhook_url'    => MAE_V3_N8N_MAIN_WEBHOOK_URL,
     ));
 
-    // Enqueue custom script only if the shortcode is used on the page
-    if ( $mae_v3_shortcode_used ) {
-        wp_enqueue_script( 'mae_v3-main-script', MAE_V3_PLUGIN_URL . 'js/my-author-editor.js', array( 'jquery', 'tinymce-api', 'select2' ), MAE_V3_VERSION, true );
-        wp_localize_script( 'mae_v3-main-script', 'maeV3EditorAjax', array(
-            'ajaxurl' => admin_url( 'admin-ajax.php' ),
-            'nonce'   => wp_create_nonce( 'mae_v3_editor' ),
-            'cep_nonce' => wp_create_nonce( 'mae_v3_cep' ),
-        ));
-    }
+    wp_localize_script( 'mae_v3-ai-script', 'maeV3EditorAjax', array(
+        'ajaxurl'   => admin_url( 'admin-ajax.php' ),
+        'nonce'     => wp_create_nonce( 'mae_v3_editor' ),
+        'cep_nonce' => wp_create_nonce( 'mae_v3_cep' ),
+    ));
 }
 }
 add_action( 'wp_enqueue_scripts', 'mae_v3_load_assets' );
+
+/**
+ * Enqueue editor scripts when shortcode renders (wp_enqueue_scripts runs before shortcode).
+ */
+if ( ! function_exists( 'mae_v3_enqueue_frontend_assets' ) ) {
+function mae_v3_enqueue_frontend_assets() {
+    static $mae_v3_frontend_enqueued = false;
+    if ( $mae_v3_frontend_enqueued ) {
+        return;
+    }
+    $mae_v3_frontend_enqueued = true;
+
+    if ( current_user_can( 'edit_posts' ) ) {
+        wp_enqueue_script( 'wp-tinymce' );
+        wp_enqueue_script( 'editor' );
+        wp_enqueue_script( 'wplink' );
+        wp_enqueue_script( 'wp-plupload' );
+        wp_enqueue_script( 'thickbox' );
+        wp_enqueue_style( 'thickbox' );
+    }
+
+    wp_enqueue_media();
+
+    wp_enqueue_script( 'select2', 'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js', array( 'jquery' ), '4.1.0-rc.0', true );
+
+    $mae_script_deps = array( 'jquery', 'select2', 'media-upload', 'media-views' );
+
+    wp_enqueue_script( 'mae_v3-main-script', MAE_V3_PLUGIN_URL . 'js/my-author-editor.js', $mae_script_deps, MAE_V3_VERSION, true );
+    wp_localize_script( 'mae_v3-main-script', 'maeV3EditorAjax', array(
+        'ajaxurl'   => admin_url( 'admin-ajax.php' ),
+        'nonce'     => wp_create_nonce( 'mae_v3_editor' ),
+        'cep_nonce' => wp_create_nonce( 'mae_v3_cep' ),
+    ));
+}
+}
 
 
 /**
@@ -591,10 +641,16 @@ function mae_v3_process_automation_trigger_callback() {
         $selected_model = 'deepseek_r1';
     }
 
-    $allowed_diff     = array( 'regular', 'preparatory' );
+    $allowed_diff     = array( 'regular', 'honors', 'preparatory' );
     $difficulty_level = isset( $data['difficulty_level'] ) ? sanitize_text_field( $data['difficulty_level'] ) : 'regular';
     if ( ! in_array( $difficulty_level, $allowed_diff, true ) ) {
         $difficulty_level = 'regular';
+    }
+
+    $allowed_grade = array( 'elementary_school', 'middle_school', 'high_school', 'college' );
+    $grade_level   = isset( $data['grade_level'] ) ? sanitize_text_field( $data['grade_level'] ) : 'middle_school';
+    if ( ! in_array( $grade_level, $allowed_grade, true ) ) {
+        $grade_level = 'middle_school';
     }
 
     $tasks_raw = isset( $data['selected_tasks'] ) ? $data['selected_tasks'] : array();
@@ -610,6 +666,7 @@ function mae_v3_process_automation_trigger_callback() {
         'author_name'      => $author_name,
         'selected_model'   => $selected_model,
         'difficulty_level' => $difficulty_level,
+        'grade_level'      => $grade_level,
         'selected_tasks'   => $selected_tasks_resolved,
         'memory_id'        => mae_v3_get_memory_id(),
         'executionMode'    => 'v3_structured',
@@ -630,6 +687,7 @@ function mae_v3_process_automation_trigger_callback() {
         'memory_id'          => $body_payload['memory_id'],
         'selected_model'     => $selected_model,
         'difficulty_level'   => $difficulty_level,
+        'grade_level'        => $grade_level,
         'task_count'         => count( $selected_tasks_resolved ),
         'has_resource_files' => $has_resource_files,
     );
@@ -730,6 +788,81 @@ function mae_v3_render_shortcode() {
 
     ob_start();
 
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+        echo '<p class="text-center text-red-500">You must be logged in with sufficient permissions to access the Author Content Editor.</p>';
+        return ob_get_clean();
+    }
+
+    mae_v3_enqueue_frontend_assets();
+
+    $status_banner_html = '';
+    if ( isset( $_GET['status'] ) ) {
+        $status_message = '';
+        $status_class   = 'bg-green-50 border border-green-200 text-green-900';
+
+        switch ( sanitize_text_field( wp_unslash( $_GET['status'] ) ) ) {
+            case 'author_published':
+                $status_message = 'Author profile published successfully!';
+                break;
+            case 'author_saved_draft':
+                $status_message = 'Author profile saved as draft!';
+                break;
+            case 'author_pending_review':
+            case 'author_ready_for_approval':
+                $status_message = 'Author profile marked as Ready for Approval.';
+                break;
+            case 'author_approved':
+                $status_message = 'Author profile marked as Approved.';
+                break;
+            case 'author_unpublished':
+                $status_message = 'Author profile unpublished.';
+                break;
+            case 'author_archived':
+                $status_message = 'Author profile archived.';
+                break;
+            case 'author_deleted':
+                $status_message = 'Author profile deleted.';
+                break;
+            case 'author_published_to_placement':
+                $status_message = 'Author profile published to the selected placement!';
+                break;
+            case 'error_empty_title':
+                $status_message = 'Author name cannot be empty.';
+                $status_class   = 'bg-red-50 border border-red-200 text-red-900';
+                break;
+            case 'error_author_db':
+                $status_message = 'An error occurred while saving the author profile. Please try again.';
+                $status_class   = 'bg-red-50 border border-red-200 text-red-900';
+                break;
+            case 'error_author_delete':
+                $status_message = 'An error occurred while deleting the author profile.';
+                $status_class   = 'bg-red-50 border border-red-200 text-red-900';
+                break;
+            case 'error_no_content_to_delete':
+                $status_message = 'No author profile selected to delete.';
+                $status_class   = 'bg-red-50 border border-red-200 text-red-900';
+                break;
+            case 'error_no_author_selected_for_placement':
+                $status_message = 'Load or save an author profile before publishing to a placement.';
+                $status_class   = 'bg-red-50 border border-red-200 text-red-900';
+                break;
+            case 'error_no_placement_selected':
+                $status_message = 'Please select a placement category first.';
+                $status_class   = 'bg-red-50 border border-red-200 text-red-900';
+                break;
+            case 'error_permissions':
+                $status_message = 'You do not have permission to perform this action.';
+                $status_class   = 'bg-red-50 border border-red-200 text-red-900';
+                break;
+            default:
+                $status_message = '';
+        }
+
+        if ( '' !== $status_message ) {
+            $status_banner_html = '<div class="caast-meta p-3 mb-4 rounded ' . esc_attr( $status_class ) . '">' . esc_html( $status_message ) . '</div>';
+        }
+    }
+
     $user_email = '';
     $user_avatar = '';
     if (is_user_logged_in()) {
@@ -759,8 +892,14 @@ function mae_v3_render_shortcode() {
             $author_name_val      = $author_post->post_title;
             $author_content_val   = $author_post->post_content;
             $author_subtitle_val  = get_post_meta($author_post->ID, 'author_subtitle', true);
-            $author_photo_id_val  = get_post_meta($author_post->ID, 'author_photo_id', true); // Assuming you save ID
-            $author_photo_url_val = get_post_meta($author_post->ID, 'author_photo_url', true); // Assuming you save URL
+            $author_photo_id_val  = (int) get_post_meta( $author_post->ID, 'author_photo_id', true );
+            $author_photo_url_val = (string) get_post_meta( $author_post->ID, 'author_photo_url', true );
+            if ( $author_photo_id_val <= 0 ) {
+                $author_photo_id_val = (int) get_post_thumbnail_id( $author_post->ID );
+            }
+            if ( '' === $author_photo_url_val && $author_photo_id_val > 0 ) {
+                $author_photo_url_val = (string) wp_get_attachment_url( $author_photo_id_val );
+            }
             $insert_link_val      = get_post_meta($author_post->ID, 'insert_link', true);
 
 
@@ -792,186 +931,108 @@ function mae_v3_render_shortcode() {
     }
     
     ?>
-    <div class="bg-gray-100 text-[12px] text-gray-600 font-mono flex justify-end gap-9 px-20 py-1 max-w-12xl mx-auto">
-        <span>myEMAIL</span>
-        <span>myCALENDAR</span>
-        <span>myPROJECTS</span>
-        <span>myLEARNING</span>
-        <span>myWORK</span>
-        <a href="<?php echo esc_url( wp_logout_url( get_permalink() ) ); ?>" class="text-gray-600 hover:text-black">Logout</a>
-    </div>
+    <div class="caast-dashboard min-h-screen">
+    <header class="caast-topbar">
+        <span class="caast-topbar__brand">CAASTEdu · Author Content Editor</span>
+        <div class="caast-topbar__actions">
+            <a href="https://caastedu.com/dashboard/" class="caast-topbar__link">Dashboard</a>
+            <a href="<?php echo esc_url( wp_logout_url( get_permalink() ) ); ?>" class="caast-topbar__link">Logout</a>
+        </div>
+    </header>
 
-    <main class="w-full mx-auto flex flex-col lg:flex-row gap-2 px-2 py-2 min-h-screen">
-        <aside aria-label="Left admin navigation panel" class="w-full lg:w-64 xl:w-72 border border-gray-300 rounded-none p-3 text-xs text-gray-700 font-sans bg-white flex-shrink-0 max-h-screen overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-            <!-- User Profile Section -->
-            <div class="flex items-center gap-2 mb-4 p-2 bg-gray-50 rounded-lg">
-                <img alt="User avatar placeholder" class="rounded-full w-8 h-8 flex-shrink-0" src="<?php echo esc_url($user_avatar); ?>" />
-                <div class="flex-1 min-w-0">
-                    <span class="block text-xs font-medium text-gray-900 truncate"><?php echo esc_html($user_email); ?></span>
-                    <span class="block text-xs text-gray-500">Content Editor</span>
-            </div>
-                <i class="fas fa-sync-alt cursor-pointer text-gray-400 text-sm hover:text-gray-600 transition-colors"></i>
+    <div class="caast-layout">
+        <aside aria-label="Left admin navigation panel" class="caast-col caast-col--nav caast-sidebar hide-scrollbar">
+            <div class="caast-sidebar__profile">
+                <img alt="User avatar" class="caast-sidebar__avatar" src="<?php echo esc_url($user_avatar); ?>" />
+                <span class="caast-sidebar__profile-name"><?php echo esc_html($user_email); ?></span>
+                <span class="caast-sidebar__profile-role">Content Editor</span>
             </div>
             
             <!-- Navigation Menu -->
             <nav class="space-y-1">
-                <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3 px-2">Website Content Editor</h2>
+                <h2 class="caast-nav-heading">Website Content Editor</h2>
                 
                 <!-- Content Editor Links -->
                 <div class="space-y-1 mb-4">
-                    <a class="flex items-center gap-3 bg-blue-50 text-blue-700 rounded-lg px-3 py-2 text-xs font-medium" href="https://caastedu.com/author-endpoint-v2/">
-                        <i class="fas fa-user text-blue-600 w-4"></i>
+                    <a class="caast-nav-link is-active" href="https://caastedu.com/author-endpoint-v2/">
+                        <i class="fas fa-user"></i>
                         <span>Author Endpoint</span>
                     </a>
-                    <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/article-endpoint/">
-                        <i class="fas fa-newspaper text-gray-500 w-4"></i> 
+                    <a class="caast-nav-link" href="https://caastedu.com/article-endpoint/">
+                        <i class="fas fa-newspaper"></i> 
                         <span>Article Endpoint</span>
                     </a>
-                    <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/book-endpoint/">
-                        <i class="fas fa-book-open text-gray-500 w-4"></i> 
+                    <a class="caast-nav-link" href="https://caastedu.com/book-endpoint/">
+                        <i class="fas fa-book-open"></i> 
                         <span>Book Endpoint</span>
                     </a>
-                    <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/llesson-plan-editor/">
-                        <i class="fas fa-file-alt text-gray-500 w-4"></i> 
+                    <a class="caast-nav-link" href="https://caastedu.com/llesson-plan-editor/">
+                        <i class="fas fa-file-alt"></i> 
                         <span>Lesson Endpoint</span>
                     </a>
-                    <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/video-endpoint/">
-                        <i class="fab fa-youtube text-gray-500 w-4"></i> 
+                    <a class="caast-nav-link" href="https://caastedu.com/video-endpoint/">
+                        <i class="fab fa-youtube"></i> 
                         <span>Video Endpoint</span>
                     </a>
-                    <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/content-automation/">
-                        <i class="fas fa-robot text-gray-500 w-4"></i> 
+                    <a class="caast-nav-link" href="https://caastedu.com/content-automation/">
+                        <i class="fas fa-robot"></i> 
                         <span>Content Automation</span>
                     </a>
                 </div>
                 
                 <!-- Dashboard Links -->
-                <div class="border-t border-gray-200 pt-4">
-                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3 px-2">Dashboard</h3>
+                <div class="border-t caast-nav-divider pt-4">
+                    <h3 class="caast-nav-heading">Dashboard</h3>
                     <div class="space-y-1">
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/">
-                            <i class="fas fa-th-large text-gray-500 w-4"></i> 
-                            <span>Dashboard</span>
-                        </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/profile/">
-                            <i class="fas fa-user text-gray-500 w-4"></i> 
-                            <span>My Profile</span>
-                        </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/enrolled-courses/">
-                            <i class="fas fa-graduation-cap text-gray-500 w-4"></i> 
-                            <span>Enrolled Courses</span>
-                        </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/my-lessonings/">
-                            <i class="fas fa-calendar-check text-gray-500 w-4"></i> 
-                            <span>My Tutor Sessions</span>
-                        </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/download-certificate/">
-                            <i class="fas fa-download text-gray-500 w-4"></i> 
-                            <span>Download Certificates</span>
-                        </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/wishlist/">
-                            <i class="far fa-heart text-gray-500 w-4"></i> 
-                            <span>Wishlist</span>
-                        </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/reviews/">
-                            <i class="far fa-star text-gray-500 w-4"></i> 
-                            <span>Reviews</span>
-                        </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/purchase-history/">
-                            <i class="fas fa-history text-gray-500 w-4"></i> 
-                            <span>Purchase History</span>
-                        </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/my-account/">
-                            <i class="fas fa-store text-gray-500 w-4"></i> 
-                            <span>Store Dashboard</span>
-                        </a>
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/"><i class="fas fa-th-large"></i><span>Dashboard</span></a>
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/profile/"><i class="fas fa-user"></i><span>My Profile</span></a>
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/enrolled-courses/"><i class="fas fa-graduation-cap"></i><span>Enrolled Courses</span></a>
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/my-lessonings/"><i class="fas fa-calendar-check"></i><span>My Tutor Sessions</span></a>
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/download-certificate/"><i class="fas fa-download"></i><span>Download Certificates</span></a>
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/wishlist/"><i class="far fa-heart"></i><span>Wishlist</span></a>
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/reviews/"><i class="far fa-star"></i><span>Reviews</span></a>
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/purchase-history/"><i class="fas fa-history"></i><span>Purchase History</span></a>
+                        <a class="caast-nav-link" href="https://caastedu.com/my-account/"><i class="fas fa-store"></i><span>Store Dashboard</span></a>
                     </div>
                 </div>
                 
-                <!-- Course Management Links -->
-                <div class="border-t border-gray-200 pt-4">
-                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3 px-2">Course Management</h3>
+                <div class="border-t caast-nav-divider pt-4">
+                    <h3 class="caast-nav-heading">Course Management</h3>
                     <div class="space-y-1">
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/courses/">
-                            <div class="flex items-center gap-3">
-                                <i class="fas fa-graduation-cap text-gray-500 w-4"></i> 
-                                <span>Courses</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
-                        </a>
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/lessons/">
-                            <div class="flex items-center gap-3">
-                                <i class="fas fa-file-alt text-gray-500 w-4"></i> 
-                                <span>All Lessons</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
-                        </a>
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/quizzes/">
-                            <div class="flex items-center gap-3">
-                                <i class="fas fa-question-circle text-gray-500 w-4"></i> 
-                                <span>Quizzes</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
-                        </a>
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/meeting/">
-                            <div class="flex items-center gap-3">
-                                <i class="fab fa-youtube text-gray-500 w-4"></i> 
-                                <span>Meetings</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
-                        </a>
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/tutor-lessoning/">
-                            <div class="flex items-center gap-3">
-                                <i class="fas fa-calendar-check text-gray-500 w-4"></i> 
-                                <span>Tutor Sessions</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
-                        </a>
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/assignments/">
-                            <div class="flex items-center gap-3">
-                                <i class="fas fa-tasks text-gray-500 w-4"></i> 
-                                <span>Assignments</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
-                        </a>
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/question-answer/">
-                            <div class="flex items-center gap-3">
-                                <i class="fas fa-question-circle text-gray-500 w-4"></i> 
-                                <span>Q&A</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
-                        </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/announcements/">
-                            <i class="fas fa-bullhorn text-gray-500 w-4"></i> 
-                            <span>Announcements</span>
-                        </a>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/courses/"><span class="flex items-center gap-3"><i class="fas fa-graduation-cap"></i><span>Courses</span></span><i class="fas fa-chevron-right text-xs opacity-50"></i></a>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/lessons/"><span class="flex items-center gap-3"><i class="fas fa-file-alt"></i><span>All Lessons</span></span><i class="fas fa-chevron-right text-xs opacity-50"></i></a>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/quizzes/"><span class="flex items-center gap-3"><i class="fas fa-question-circle"></i><span>Quizzes</span></span><i class="fas fa-chevron-right text-xs opacity-50"></i></a>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/meeting/"><span class="flex items-center gap-3"><i class="fab fa-youtube"></i><span>Meetings</span></span><i class="fas fa-chevron-right text-xs opacity-50"></i></a>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/tutor-lessoning/"><span class="flex items-center gap-3"><i class="fas fa-calendar-check"></i><span>Tutor Sessions</span></span><i class="fas fa-chevron-right text-xs opacity-50"></i></a>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/assignments/"><span class="flex items-center gap-3"><i class="fas fa-tasks"></i><span>Assignments</span></span><i class="fas fa-chevron-right text-xs opacity-50"></i></a>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/question-answer/"><span class="flex items-center gap-3"><i class="fas fa-question-circle"></i><span>Q&A</span></span><i class="fas fa-chevron-right text-xs opacity-50"></i></a>
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/announcements/"><i class="fas fa-bullhorn"></i><span>Announcements</span></a>
                     </div>
                 </div>
             </nav>
             
-            <!-- Settings Section -->
-            <div class="border-t border-gray-200 pt-4 mt-4">
-                <a href="https://caastedu.com/dashboard/settings/" class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors">
-                    <i class="fas fa-cog text-gray-500 w-4"></i> 
-                    <span>Settings</span>
-                </a>
+            <div class="border-t caast-nav-divider pt-4 mt-4">
+                <a href="https://caastedu.com/dashboard/settings/" class="caast-nav-link"><i class="fas fa-cog"></i><span>Settings</span></a>
             </div>
         </aside>
 
-        <section class="flex-1 flex flex-col lg:flex-row gap-3 w-full max-h-screen overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]" style="min-height:100vh;">
-            <!-- Main Content Area (matches my-lesson-editor Content Endpoint shell) -->
-            <div class="flex-1 bg-white border border-gray-300 rounded-none p-2 lg:p-6 min-h-[calc(100vh-40px)] flex flex-col w-full">
-                <h2 class="text-xl font-semibold mb-4">Author Content Editor</h2>
+            <div class="caast-col caast-col--editor caast-col-pane">
+                <header class="caast-pane-header">
+                    <h1 class="caast-page-title">Author Content Editor</h1>
+                    <p class="caast-page-subtitle">Manage author profiles, run AI automation, and publish to placements.</p>
+                </header>
+                <?php echo $status_banner_html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 
-                <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" enctype="multipart/form-data" class="font-sans w-full flex flex-col flex-1 box-shadow:none" id="author-editor-form" style="max-width: none !important; box-shadow: none !important; border-radius: 0 !important; margin: 0 !important; padding: 0 !important; background: transparent !important;">
+                <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" enctype="multipart/form-data" class="w-full flex flex-col flex-1" id="author-editor-form">
                     <input type="hidden" name="action" value="mae_v3_submit">
                     <?php wp_nonce_field('author_content_submission', '_wpnonce_author_content'); ?>
                     <input type="hidden" name="author_post_id" id="author_post_id" value="<?php echo esc_attr( $author_post_id_val ); ?>">
 
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end mb-3 w-full">
+                    <div class="caast-form-section space-y-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end w-full">
                         <div class="sm:col-span-2">
-                            <label for="selected_author_id" class="block text-xs sm:text-sm font-medium text-gray-700">Select an existing author</label>
-                            <select name="selected_author_id" id="selected_author_id" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                            <label for="selected_author_id" class="caast-label">Select an existing author</label>
+                            <select name="selected_author_id" id="selected_author_id" class="caast-select mae-dashboard-input">
                                 <option value="">-- Select an author --</option>
                                 <?php
                                 $authors = get_posts( array(
@@ -979,7 +1040,9 @@ function mae_v3_render_shortcode() {
                                     'posts_per_page' => -1,
                                     'orderby'        => 'title',
                                     'order'          => 'ASC',
-                                    'post_status'    => array('publish', 'draft', 'pending', 'archive'),
+                                    'post_status'    => function_exists( 'caast_workflow_get_editor_query_statuses' )
+                                        ? caast_workflow_get_editor_query_statuses()
+                                        : array( 'publish', 'draft', 'pending', 'archive' ),
                                 ) );
                                 foreach ( $authors as $author ) {
                                     $selected = selected( $author_post_id_val, $author->ID, false );
@@ -989,25 +1052,25 @@ function mae_v3_render_shortcode() {
                             </select>
                         </div>
                         <div class="flex items-end">
-                            <button type="button" id="load-author-content-btn" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full">Submit</button>
+                            <button type="button" id="load-author-content-btn" class="caast-btn caast-btn--secondary caast-btn--block">Load author</button>
                         </div>
                     </div>
 
-                    <div class="flex flex-col mb-3 w-full">
-                        <label for="new_author_name" class="block text-xs sm:text-sm font-medium text-gray-700">Add a new author</label>
-                        <input type="text" name="new_author_name" id="new_author_name" placeholder="Enter new author name" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" value="<?php echo esc_attr($author_name_val); ?>" />
+                    <div class="flex flex-col w-full">
+                        <label for="new_author_name" class="caast-label">Add a new author</label>
+                        <input type="text" name="new_author_name" id="new_author_name" placeholder="Enter new author name" class="caast-input mae-dashboard-input" value="<?php echo esc_attr($author_name_val); ?>" />
                     </div>
 
-                    <div class="flex flex-col mb-3 w-full">
-                        <label for="author_subtitle" class="block text-xs sm:text-sm font-medium text-gray-700">Author Subtitle:</label>
-                        <input type="text" name="author_subtitle" id="author_subtitle" placeholder="Author subtitle text" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" value="<?php echo esc_attr($author_subtitle_val); ?>" />
+                    <div class="flex flex-col w-full">
+                        <label for="author_subtitle" class="caast-label">Author subtitle</label>
+                        <input type="text" name="author_subtitle" id="author_subtitle" placeholder="Author subtitle text" class="caast-input mae-dashboard-input" value="<?php echo esc_attr($author_subtitle_val); ?>" />
                     </div>
 
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end mb-3 w-full">
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end w-full">
                         <div class="sm:col-span-2">
-                            <label class="block text-xs sm:text-sm font-medium text-gray-700">Upload Author Photo</label>
+                            <label class="caast-label">Upload author photo</label>
                             <div class="mt-1 flex items-center gap-2">
-                                <input type="text" id="author_photo_url" name="author_photo_url" class="flex-grow border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" placeholder="Browse author photo" readonly value="<?php echo esc_url($author_photo_url_val); ?>" />
+                                <input type="text" id="author_photo_url" name="author_photo_url" class="caast-input mae-dashboard-input flex-grow" placeholder="Browse author photo" readonly value="<?php echo esc_url($author_photo_url_val); ?>" />
                                 <input type="hidden" id="author_photo_id" name="author_photo_id" value="<?php echo esc_attr($author_photo_id_val); ?>" />
                             </div>
                             <div id="author-photo-preview" class="mt-2 text-center" style="<?php echo empty($author_photo_url_val) ? 'display:none;' : ''; ?>">
@@ -1016,12 +1079,12 @@ function mae_v3_render_shortcode() {
                             </div>
                         </div>
                         <div class="flex items-end">
-                            <button type="button" class="button button-secondary browse-author-photo bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full">Browse</button>
+                            <button type="button" class="caast-btn caast-btn--secondary caast-btn--block browse-author-photo">Browse</button>
                         </div>
                     </div>
 
-                    <div class="mb-3 w-full">
-                        <label for="author_content" class="block text-xs sm:text-sm font-medium text-gray-700">Biography/Description:</label>
+                    <div class="w-full">
+                        <label for="author_content" class="caast-label">Biography / description</label>
                         <?php
                         if ( current_user_can( 'edit_posts' ) ) {
                             wp_editor( $author_content_val, 'author_content', array(
@@ -1042,10 +1105,10 @@ function mae_v3_render_shortcode() {
                         ?>
                     </div>
 
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-4 mb-4 w-full">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full">
                         <div>
-                            <label for="author_category" class="block text-xs sm:text-sm font-medium text-gray-700">Category</label>
-                            <select name="author_category" id="author_category" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm select2-category">
+                            <label for="author_category" class="caast-label">Category</label>
+                            <select name="author_category" id="author_category" class="caast-select mae-dashboard-input select2-category">
                                 <option value="">-- Select Category --</option>
                                 <?php
                                 $categories = get_terms( array(
@@ -1060,8 +1123,8 @@ function mae_v3_render_shortcode() {
                             </select>
                         </div>
                         <div>
-                            <label for="author_level" class="block text-xs sm:text-sm font-medium text-gray-700">Level</label>
-                            <select name="author_level" id="author_level" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm select2-level">
+                            <label for="author_level" class="caast-label">Level</label>
+                            <select name="author_level" id="author_level" class="caast-select mae-dashboard-input select2-level">
                                 <option value="">-- Select Level --</option>
                                 <?php
                                 $levels = get_terms( array(
@@ -1077,234 +1140,275 @@ function mae_v3_render_shortcode() {
                         </div>
                     </div>
 
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4 w-full">
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full pt-2 border-t border-slate-100">
                         <div class="sm:col-span-2 flex flex-col">
-                            <label for="submit_author_action_select" class="block text-xs sm:text-sm font-medium text-gray-700">Action</label>
-                            <select name="submit_author_action" id="submit_author_action_select" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
-                                <option value="save" <?php selected('save', get_post_status($author_post_id_val)); ?>>Save Draft</option>
-                                <option value="publish" <?php selected('publish', get_post_status($author_post_id_val)); ?>>Publish Ready</option>
-                                <option value="unpublish" <?php selected('draft', get_post_status($author_post_id_val)); ?>>Unpublish</option>
-                                <option value="archive" <?php selected('archive', get_post_status($author_post_id_val)); ?>>Archive</option>
-                                <option value="delete">Delete</option>
-                            </select>
-                        </div>
-                        <div class="flex items-end">
-                            <button type="submit" name="submit_author_action_btn" value="submit" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full">Submit</button>
-                        </div>
-                    </div>
-
-                    <!-- Updated Placement Category Section -->
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4 w-full">
-                        <div class="flex flex-col sm:col-span-2">
-                            <label for="placement_category" class="block text-xs sm:text-sm font-medium text-gray-700">Placement Category</label>
-                            <select name="placement_category" id="placement_category" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
-                                <option value="">-- Select Placement --</option>
+                            <label for="submit_author_action_select" class="caast-label">Action</label>
+                            <select name="submit_author_action" id="submit_author_action_select" class="caast-select mae-dashboard-input">
                                 <?php
-                                $placements = array(
-                                    'Home Left Section 1',
-                                    'Home Left Section 2',
-                                    'Home Right List 1',
-                                    'Home Right List 2',
-                                    'Article Left',
-                                    'Article Right',
-                                    'Article Footer',
-                                    'Book Left',
-                                    'Book Right',
-                                    'Book Footer',
-                                    'Video Left',
-                                    'Video Right',
-                                    'Video Footer'
-                                );
-                                $current_placement = wp_get_post_terms($author_post_id_val, 'placement_category', array('fields' => 'slugs'));
-                                $current_placement_slug = !is_wp_error($current_placement) && !empty($current_placement) ? $current_placement[0] : '';
-
-                                foreach ( $placements as $placement_name ) {
-                                    $slug = sanitize_title($placement_name); // Convert name to slug
-                                    $selected = selected( $current_placement_slug, $slug, false );
-                                    echo '<option value="' . esc_attr( $slug ) . '" ' . $selected . '>' . esc_html( $placement_name ) . '</option>';
+                                $author_current_status = $author_post_id_val ? get_post_status( $author_post_id_val ) : 'draft';
+                                if ( function_exists( 'caast_workflow_render_action_options' ) ) {
+                                    caast_workflow_render_action_options( $author_current_status );
+                                } else {
+                                    ?>
+                                    <option value="save">Save Draft</option>
+                                    <option value="publish">Publish Ready</option>
+                                    <option value="unpublish">Unpublish</option>
+                                    <option value="archive">Archive</option>
+                                    <option value="delete">Delete</option>
+                                    <?php
                                 }
                                 ?>
                             </select>
                         </div>
                         <div class="flex items-end">
-                            <button type="submit" name="placement_action" value="publish_placement" class="button button-primary bg-blue-600 text-white px-4 py-2 rounded-none hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 w-full">Publish</button>
+                            <button type="submit" name="submit_author_action_btn" value="submit" class="caast-btn caast-btn--secondary caast-btn--block">Submit</button>
                         </div>
                     </div>
 
-                    
+                    <div class="w-full space-y-3">
+                        <div class="w-full caast-publish-mode">
+                            <span class="caast-label">Publish mode</span>
+                            <div class="mt-1 flex flex-wrap items-center gap-4">
+                                <label class="caast-publish-mode-option" for="publish_mode_add">
+                                    <input type="checkbox" name="publish_mode_add" id="publish_mode_add" value="1" class="caast-publish-mode-check" checked />
+                                    <span>Add</span>
+                                </label>
+                                <label class="caast-publish-mode-option" for="publish_mode_replace">
+                                    <input type="checkbox" name="publish_mode_replace" id="publish_mode_replace" value="1" class="caast-publish-mode-check" />
+                                    <span>Replace</span>
+                                </label>
+                            </div>
+                            <p class="caast-meta mt-1">Add keeps what was already published and only applies new filled fields. Replace overwrites published content. Default is Add — empty editor / image fields will not blank out live content.</p>
+                        </div>
+
+                        <div class="flex flex-col w-full">
+                            <label class="caast-label">Placement category</label>
+                            <?php
+                            $placements = array(
+                                'Home Left Section 1',
+                                'Home Left Foot Images',
+                                'Home Right Section 1',
+                                'Home Right Section Images',
+                            );
+                            $current_placement = wp_get_post_terms( $author_post_id_val, 'placement_category', array( 'fields' => 'slugs' ) );
+                            $current_placements = ( ! is_wp_error( $current_placement ) && ! empty( $current_placement ) ) ? $current_placement : array();
+                            $current_placements = array_values( array_intersect( $current_placements, mae_v3_get_allowed_placement_slugs() ) );
+                            if ( empty( $current_placements ) ) {
+                                $current_placements = array( 'home-left-section-1' );
+                            }
+                            ?>
+                            <div id="placement_category" class="caast-placement-checkboxes space-y-1">
+                                <?php
+                                foreach ( $placements as $placement_name ) {
+                                    $slug    = sanitize_title( $placement_name );
+                                    $checked = in_array( $slug, $current_placements, true ) ? 'checked' : '';
+                                    echo '<label class="caast-checkbox-row flex items-center gap-2"><input type="checkbox" class="caast-placement-checkbox" name="placement_category[]" value="' . esc_attr( $slug ) . '" ' . $checked . '> <span>' . esc_html( $placement_name ) . '</span></label>';
+                                }
+                                ?>
+                            </div>
+                            <p class="caast-meta mt-1">Tick one or more placements to publish this author to multiple sections at the same time.</p>
+                        </div>
+
+                    <?php
+                    $slot_photo_map = mae_v3_get_author_attach_photos( $author_post_id_val );
+                    $foot_image_map = mae_v3_get_author_attach_foot_images( $author_post_id_val );
+                    $right_section_image_map = mae_v3_get_author_attach_right_section_images( $author_post_id_val );
+                    ?>
+                    <div id="caast-attach-config-section-1" class="w-full space-y-3 pt-2 border-t border-slate-100 caast-attach-images caast-attach-config" data-placement="home-left-section-1" style="<?php echo in_array( 'home-left-section-1', $current_placements, true ) ? '' : 'display:none;'; ?>">
+                        <p class="caast-meta">Article section images (left column body).</p>
+                        <?php
+                        for ( $photo_num = 1; $photo_num <= 3; $photo_num++ ) {
+                            mae_v3_render_attach_image_row(
+                                array(
+                                    'prefix' => 'attach_photo',
+                                    'index'  => $photo_num,
+                                    'id'     => isset( $slot_photo_map[ $photo_num ]['id'] ) ? (int) $slot_photo_map[ $photo_num ]['id'] : 0,
+                                    'url'    => isset( $slot_photo_map[ $photo_num ]['url'] ) ? (string) $slot_photo_map[ $photo_num ]['url'] : '',
+                                    'link'   => isset( $slot_photo_map[ $photo_num ]['link'] ) ? (string) $slot_photo_map[ $photo_num ]['link'] : '',
+                                )
+                            );
+                        }
+                        ?>
+                    </div>
+
+                    <div id="caast-attach-config-foot" class="w-full space-y-3 pt-2 border-t border-slate-100 caast-attach-images caast-attach-config" data-placement="home-left-foot-images" style="<?php echo in_array( 'home-left-foot-images', $current_placements, true ) ? '' : 'display:none;'; ?>">
+                        <p class="caast-meta">Authors page foot images (left #1, center #2, right #3).</p>
+                        <?php
+                        $foot_labels = array( 1 => 'left', 2 => 'center', 3 => 'right' );
+                        for ( $photo_num = 1; $photo_num <= 3; $photo_num++ ) {
+                            mae_v3_render_attach_image_row(
+                                array(
+                                    'prefix'   => 'attach_foot',
+                                    'index'    => $photo_num,
+                                    'id'       => isset( $foot_image_map[ $photo_num ]['id'] ) ? (int) $foot_image_map[ $photo_num ]['id'] : 0,
+                                    'url'      => isset( $foot_image_map[ $photo_num ]['url'] ) ? (string) $foot_image_map[ $photo_num ]['url'] : '',
+                                    'link'     => isset( $foot_image_map[ $photo_num ]['link'] ) ? (string) $foot_image_map[ $photo_num ]['link'] : '',
+                                    'position' => $foot_labels[ $photo_num ],
+                                )
+                            );
+                        }
+                        ?>
+                    </div>
+
+                    <div id="caast-attach-config-right-s1" class="w-full space-y-2 pt-2 border-t border-slate-100 caast-attach-config" data-placement="home-right-section-1" style="<?php echo in_array( 'home-right-section-1', $current_placements, true ) ? '' : 'display:none;'; ?>">
+                        <p class="caast-meta">Home Right Section 1 listing uses the author photo as thumbnail, plus title and date on the Authors page right column (same pattern as Home Left Section 1). No extra attach images needed here.</p>
+                    </div>
+
+                    <div id="caast-attach-config-right-images" class="w-full space-y-3 pt-2 border-t border-slate-100 caast-attach-images caast-attach-config" data-placement="home-right-section-images" style="<?php echo in_array( 'home-right-section-images', $current_placements, true ) ? '' : 'display:none;'; ?>">
+                        <p class="caast-meta">Right column promo images: Image #1 after listing 10, #2 after 20, #3 after 30.</p>
+                        <?php
+                        $right_labels = array(
+                            1 => 'after listing 10',
+                            2 => 'after listing 20',
+                            3 => 'after listing 30',
+                        );
+                        for ( $photo_num = 1; $photo_num <= 3; $photo_num++ ) {
+                            mae_v3_render_attach_image_row(
+                                array(
+                                    'prefix'   => 'attach_right',
+                                    'index'    => $photo_num,
+                                    'id'       => isset( $right_section_image_map[ $photo_num ]['id'] ) ? (int) $right_section_image_map[ $photo_num ]['id'] : 0,
+                                    'url'      => isset( $right_section_image_map[ $photo_num ]['url'] ) ? (string) $right_section_image_map[ $photo_num ]['url'] : '',
+                                    'link'     => isset( $right_section_image_map[ $photo_num ]['link'] ) ? (string) $right_section_image_map[ $photo_num ]['link'] : '',
+                                    'position' => $right_labels[ $photo_num ],
+                                )
+                            );
+                        }
+                        ?>
+                    </div>
+
+                        <div class="flex items-end pt-1">
+                            <button type="submit" name="placement_action" value="publish_placement" class="caast-btn caast-btn--success caast-btn--block">Publish</button>
+                        </div>
+                    </div>
+                    </div>
 
                 </form>
 
             </div>
-        </section>
-        <style>
-            @media (max-width: 1024px) {
-                section.flex-1.flex, section .flex-1 {
-                    min-height: unset !important;
-                }
-            }
-            section.flex-1.flex {
-                min-height: 100vh;
-                width: 100vw;
-                max-width: 100vw;
-            }
-            section.flex-1.flex .flex-1 {
-                min-width:0;
-                flex-shrink:1;
-                flex-grow:1;
-                width: 100%;
-                display: flex;
-                flex-direction: column;
-            }
-            #author-editor-form {
-                flex: 1 1 auto;
-                min-height: 0;
-                max-width: 100vw;
-            }
-            @media (max-width: 640px) {
-                section.flex-1.flex .flex-1 {
-                    padding: 0.5rem !important;
-                }
-                #author-editor-form {
-                    padding: 0 !important;
-                }
-            }
-        </style>
-        <script>
-        (function() {
-            function fixVH() {
-                document.querySelectorAll('section.flex-1.flex').forEach(function(section) {
-                    section.style.minHeight = window.innerHeight + 'px';
-                });
-            }
-            window.addEventListener('resize', fixVH);
-            window.addEventListener('zoom', fixVH);
-            fixVH();
-        })();
-        </script>
 
-        <!-- AI Content Generator sidebar (visual shell aligned with my-lesson-editor Content Endpoint) -->
-        <aside class="w-full lg:w-1/4 bg-white border border-gray-300 rounded-lg p-4 lg:p-6 shadow-md max-h-screen overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-            <h2 class="text-xl font-semibold text-gray-800 mb-4">AI Content Generator</h2>
+        <aside class="caast-col caast-col--ai caast-col-pane hide-scrollbar space-y-4">
+            <header>
+                <h2 class="caast-section-title">AI Content Generator</h2>
+                <p class="caast-meta mt-1">Configure automation input, choose an AI model, and generate content.</p>
+            </header>
 
             <input type="hidden" id="automation_book_name" name="automation_book_name" value="N/A" autocomplete="off">
 
-            <div class="mb-6">
-                <h3 class="text-lg font-semibold text-gray-800 mb-3">Automation input</h3>
-                <div class="mb-4">
-                    <label for="author_name" class="block text-gray-700 text-sm font-bold mb-2">Author name</label>
-                    <input type="text" id="author_name" class="form-input mt-1 block w-full border border-gray-300 rounded-none shadow-sm p-2" placeholder="Enter author full name…" autocomplete="name">
+            <div class="space-y-4">
+                <h3 class="text-sm font-semibold text-slate-800 uppercase tracking-wide">Automation input</h3>
+                <div>
+                    <label for="author_name" class="caast-label">Author name</label>
+                    <input type="text" id="author_name" class="caast-input form-input mae-dashboard-input" placeholder="Enter author full name…" autocomplete="name">
                 </div>
             </div>
 
-            <div id="llm-model-selector-block" class="mb-6">
-                <label for="llm_model_select" class="block text-gray-700 text-sm font-bold mb-2">AI Model</label>
-                <select id="llm_model_select" class="form-input mt-1 block w-full border border-gray-300 rounded-none shadow-sm p-2">
+            <div id="llm-model-selector-block" class="space-y-2">
+                <label for="llm_model_select" class="caast-label">AI model</label>
+                <select id="llm_model_select" class="caast-select form-input mae-dashboard-input">
                     <option value="deepseek_r1" selected>DeepSeek-R1</option>
                     <option value="gpt_4o">Kimi K2</option>
                     <option value="claude_3_5_sonnet">Qwen 3</option>
                 </select>
-                <p class="text-gray-500 text-xs mt-1">Active model: <span id="active-model-label" class="font-semibold text-gray-800">DeepSeek-R1</span></p>
+                <p class="caast-meta">Active model: <span id="active-model-label" class="font-semibold text-slate-700">DeepSeek-R1</span></p>
             </div>
 
-            <div class="mb-6">
-                <label class="block text-gray-700 text-sm font-bold mb-2">Difficulty level</label>
-                <div class="inline-flex w-full rounded-none border border-gray-300 bg-gray-100 p-1 shadow-inner" role="radiogroup" aria-label="Difficulty level">
-                    <label class="flex-1 cursor-pointer text-center min-w-0">
-                        <input type="radio" name="difficulty_level" value="regular" class="peer sr-only" checked>
-                        <span class="block rounded-none px-3 py-2 text-sm font-medium text-gray-600 transition-all duration-200 peer-checked:bg-white peer-checked:text-gray-900 peer-checked:shadow peer-focus:ring-2 peer-focus:ring-indigo-500 peer-focus:ring-offset-2">Regular</span>
-                    </label>
-                    <label class="flex-1 cursor-pointer text-center min-w-0">
-                        <input type="radio" name="difficulty_level" value="preparatory" class="peer sr-only">
-                        <span class="block rounded-none px-3 py-2 text-sm font-medium text-gray-600 transition-all duration-200 peer-checked:bg-white peer-checked:text-gray-900 peer-checked:shadow peer-focus:ring-2 peer-focus:ring-indigo-500 peer-focus:ring-offset-2">Preparatory</span>
-                    </label>
-                </div>
+            <div>
+                <label for="grade_level" class="caast-label">Grade level</label>
+                <select id="grade_level" name="grade_level" class="caast-select form-input mae-dashboard-input">
+                    <option value="elementary_school">Elementary School</option>
+                    <option value="middle_school" selected>Middle School</option>
+                    <option value="high_school">High School</option>
+                    <option value="college">College</option>
+                </select>
+            </div>
+            <div>
+                <label for="difficulty_level_select" class="caast-label">Difficulty level</label>
+                <select id="difficulty_level_select" name="difficulty_level" class="caast-select form-input mae-dashboard-input">
+                    <option value="regular" selected>Regular</option>
+                    <option value="honors">Honors</option>
+                    <option value="preparatory">Preparatory</option>
+                </select>
             </div>
 
-            <div class="mb-6">
-                <h3 class="text-lg font-semibold text-gray-800 mb-4">Select Content Types to Generate</h3>
+            <div>
+                <h3 class="text-sm font-semibold text-slate-800 uppercase tracking-wide mb-4">Content types to generate</h3>
                 <div class="space-y-3">
-                    <div class="content-type-card bg-blue-50 border border-blue-200 rounded-lg p-3">
+                    <div class="caast-content-type-card content-type-card">
                         <label class="flex items-start space-x-3 cursor-pointer group">
-                            <input type="checkbox" id="task_author_intro" class="content-type-checkbox mt-1 h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500" data-task-id="author_introduction" checked>
+                            <input type="checkbox" id="task_author_intro" class="content-type-checkbox mt-1 h-4 w-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500" data-task-id="author_introduction" checked>
                             <div class="flex-1">
-                                <span class="text-sm font-medium text-gray-900 group-hover:text-blue-700">Author Introduction</span>
-                                <p class="text-xs text-gray-600 mt-1">Sends the author introduction task to n8n (same payload shape as v3).</p>
+                                <span class="text-sm font-medium text-slate-900 group-hover:text-blue-700">Author Introduction</span>
+                                <p class="caast-meta mt-1">Sends the author introduction task to n8n.</p>
                             </div>
                         </label>
                     </div>
                 </div>
             </div>
 
-            <button type="button" id="start_full_automation" class="generate-btn mae-generate-btn button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full">Start Automation Process</button>
-            <div id="full_automation_status" class="response-status-message mt-4 p-3 hidden text-center font-semibold rounded"></div>
+            <button type="button" id="start_full_automation" class="caast-btn caast-btn--primary caast-btn--block generate-btn mae-generate-btn">Start Automation Process</button>
+            <div id="full_automation_status" class="response-status-message caast-status caast-status--neutral hidden text-center font-semibold"></div>
 
-            <div class="mt-6">
-                <div class="flex items-center justify-between mb-2">
-                    <h3 class="text-lg font-semibold text-gray-800">LLM output</h3>
-                    <span class="text-xs uppercase tracking-wide text-gray-500 font-semibold">Document preview</span>
+            <div class="pt-4 border-t border-slate-100 space-y-3">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-sm font-semibold text-slate-800">LLM output</h3>
+                    <span class="caast-meta uppercase tracking-wide font-semibold">Document preview</span>
                 </div>
-                <label for="final_generated_title" class="block text-gray-700 text-sm font-bold mb-2">Prompt Title:</label>
-                <input type="text" id="final_generated_title" class="form-input mt-1 block w-full border border-gray-300 rounded-none shadow-sm p-2" readonly placeholder="Generated title…">
+                <label for="final_generated_title" class="caast-label">Prompt title</label>
+                <input type="text" id="final_generated_title" class="caast-input form-input mae-dashboard-input" readonly placeholder="Generated title…">
 
-                <label for="final_generated_content" class="block text-gray-700 text-sm font-bold mb-2 mt-4">Prompt Content:</label>
+                <label for="final_generated_content" class="caast-label">Prompt content</label>
                 <div class="flex justify-end mb-2">
-                    <button type="button" id="copy_final_generated_content_btn" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 text-sm">Copy to Clipboard</button>
+                    <button type="button" id="copy_final_generated_content_btn" class="caast-btn caast-btn--secondary text-sm">Copy to clipboard</button>
                 </div>
-                <textarea id="final_generated_content" class="output-content-textarea shadow appearance-none border rounded-none w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" rows="10" readonly placeholder="Generated content will appear here…"></textarea>
+                <textarea id="final_generated_content" class="output-content-textarea mae-doc-preview-textarea caast-input w-full" rows="10" readonly placeholder="Generated content will appear here…"></textarea>
             </div>
 
-            <button type="button" id="upload_final_content_to_editor" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full mt-4">Load to Main Editor</button>
-            <button type="button" id="save_final_content_as_draft" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full mt-2">Save as New Draft</button>
+            <button type="button" id="upload_final_content_to_editor" class="caast-btn caast-btn--secondary caast-btn--block">Load to main editor</button>
+            <button type="button" id="save_final_content_as_draft" class="caast-btn caast-btn--secondary caast-btn--block">Save as new draft</button>
         </aside>
         
-        <aside class="w-full lg:w-1/5 bg-white border border-gray-300 rounded-lg p-4 lg:p-6 shadow-md max-h-screen overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-            <h2 class="text-xl font-semibold text-gray-800 mb-4 mt-6">Generated Drafts Content</h2>
-            <div class="flex flex-col md:flex-row gap-4">
-                <div class="flex-1">
-                    <label for="select_title_ce" class="block text-gray-700 text-sm font-bold mb-2">
-                        Select Title:
-                    </label>
-                    <select id="select_title_ce" class="w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+        <aside class="caast-col caast-col--drafts caast-col-pane hide-scrollbar space-y-3">
+            <h2 class="caast-section-title">Generated Drafts</h2>
+            <p class="caast-meta">Load or manage AI-generated draft content.</p>
+            <div class="space-y-4">
+                <div>
+                    <label for="mae_select_title_ce" class="caast-label">Select title</label>
+                    <select id="mae_select_title_ce" class="caast-select mae-dashboard-input">
                         <option value="">-- Select Title --</option>
                         <?php
-                        // Populate with existing author_profile posts (drafts and published)
-                        $args = array(
-                            'post_type'      => 'author_profile',
-                            'posts_per_page' => -1,
-                            'post_status'    => array( 'publish', 'draft', 'pending', 'archive' ),
-                            'orderby'        => 'title',
-                            'order'          => 'ASC',
-                        );
-                        $author_posts = get_posts( $args );
-                        if ( ! empty( $author_posts ) ) {
-                            foreach ( $author_posts as $author_post ) {
-                                echo '<option value="' . esc_attr( $author_post->ID ) . '">' . esc_html( $author_post->post_title ) . ' (' . esc_html( $author_post->post_status ) . ')</option>';
-                            }
+                        foreach ( mae_v3_query_draft_list_posts() as $author_post ) {
+                            $status_label = function_exists( 'caast_workflow_format_draft_list_status' )
+                                ? caast_workflow_format_draft_list_status( $author_post->post_status )
+                                : $author_post->post_status;
+                            printf(
+                                '<option value="%1$d">%2$s (%3$s)</option>',
+                                (int) $author_post->ID,
+                                esc_html( $author_post->post_title ),
+                                esc_html( $status_label )
+                            );
                         }
                         ?>
                     </select>
                 </div>
-                <div class="flex-1 hidden" id="draft_selection_container">
-                    <label for="select_draft_ce" class="block text-gray-700 text-sm font-bold mb-2">
-                        Select Draft:
-                    </label>
-                    <select id="select_draft_ce" class="w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                <div class="hidden" id="mae_draft_selection_container">
+                    <label for="mae_select_draft_ce" class="caast-label">Select draft</label>
+                    <select id="mae_select_draft_ce" class="caast-select mae-dashboard-input">
                         <option value="">-- Select Draft --</option>
+                        <option value="main"><?php esc_html_e( 'Main author body', 'my-author-editor' ); ?></option>
                         <option value="draft1">Draft 1 (Agent 1)</option>
                         <option value="draft2">Draft 2 (Agent 2)</option>
                         <option value="draft3">Draft 3 (Agent 3)</option>
                     </select>
                 </div>
-                <div class="flex items-end">
-                    <button type="button" id="load_content_to_editor_from_draft" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full">Load Content to Editor</button>
+                    <button type="button" id="load_content_to_editor_from_draft" class="caast-btn caast-btn--primary caast-btn--block">Load content to editor</button>
                 </div>
             </div>
 
-            <div class="mt-6 border-t border-gray-300 pt-4">
-                <h3 class="text-lg font-semibold text-gray-800 mb-3">Draft List</h3>
+            <div class="pt-4 border-t border-slate-100">
+                <h3 class="text-sm font-semibold text-slate-800 mb-3">Draft list</h3>
                 <div id="draft_list_container" class="space-y-2">
-                    <p class="text-gray-500 text-sm">Select a title above to view drafts.</p>
+                    <p class="caast-meta">Select a title above to view drafts.</p>
                 </div>
             </div>
         </aside>
@@ -1319,7 +1423,7 @@ function mae_v3_render_shortcode() {
                 var ajaxUrl = typeof maeV3EditorAjax !== 'undefined' ? maeV3EditorAjax.ajaxurl : '';
 
                 // Load draft list when title is selected
-                $('#select_title_ce').on('change', function() {
+                $('#mae_select_title_ce').on('change', function() {
                     var authorProfileId = $(this).val();
                     if (authorProfileId) {
                         loadDraftList(authorProfileId);
@@ -1360,7 +1464,7 @@ function mae_v3_render_shortcode() {
                 function renderDraftList(drafts) {
                     var html = '';
                     drafts.forEach(function(draft) {
-                        html += '<div class="draft-item border border-gray-200 p-3 mb-2 flex items-center justify-between hover:bg-gray-50 transition-colors" data-draft-id="' + escapeHtml(draft.draft_id) + '">';
+                        html += '<div class="caast-draft-item draft-item flex items-center justify-between" data-draft-id="' + escapeHtml(draft.draft_id) + '">';
                         html += '<div class="flex-1">';
                         html += '<div class="font-semibold text-sm text-gray-800">' + escapeHtml(draft.title) + '</div>';
                         html += '<div class="text-xs text-gray-500 mt-1">';
@@ -1471,7 +1575,14 @@ function mae_v3_render_shortcode() {
                         },
                         success: function(response) {
                             if (response.success) {
-                                var content = response.data.content;
+                                var data = response.data || {};
+                                var content = data.content || '';
+                                if (data.title) {
+                                    $('#new_author_name').val(data.title);
+                                }
+                                if (data.post_id) {
+                                    $('#author_post_id').val(data.post_id);
+                                }
                                 
                                 // Try to set content in TinyMCE editor
                                 if (typeof tinymce !== 'undefined' && tinymce.get('author_content')) {
@@ -1552,7 +1663,7 @@ function mae_v3_render_shortcode() {
                                     // Reload draft list if container is empty or check if we need to show empty message
                                     var $container = $('#draft_list_container');
                                     if ($container.find('.draft-item').length === 0) {
-                                        var authorProfileId = $('#select_title_ce').val();
+                                        var authorProfileId = $('#mae_select_title_ce').val();
                                         if (authorProfileId) {
                                             loadDraftList(authorProfileId);
                                         } else {
@@ -1590,10 +1701,8 @@ function mae_v3_render_shortcode() {
             });
             </script>
 
-
-
-        
-    </main>
+    </div>
+    </div>
     <?php
     return ob_get_clean();
 }
@@ -1609,19 +1718,7 @@ if ( ! shortcode_exists( 'mae_v3_author_dashboard' ) ) {
     add_shortcode( 'mae_v3_author_dashboard', 'mae_v3_render_shortcode' );
 }
 
-// Add rewrite rules (ensure this is present if you use permalinks for author profiles)
-if ( ! function_exists( 'mae_v3_rewrite_rule' ) ) {
-function mae_v3_rewrite_rule() {
-    add_rewrite_rule(
-        '^author-profile/([0-9]+)/?$',
-        'index.php?post_type=author_profile&p=$matches[1]',
-        'top'
-    );
-}
-}
-add_action( 'init', 'mae_v3_rewrite_rule' );
-
-// Flush rewrite rules on plugin activation
+// Permalink slugs are managed by caast-content-workflow (/author/{slug}/).
 function mae_v3_activate() {
     mae_v3_register_cpt(); // Ensure CPT is registered
     mae_v3_register_taxonomies(); // Ensure taxonomies are registered
@@ -1639,6 +1736,314 @@ function mae_v3_deactivate() {
 }
 register_deactivation_hook( __FILE__, 'mae_v3_deactivate' );
 
+/**
+ * Query author_profile posts for the Generated Drafts dropdown.
+ *
+ * @return WP_Post[]
+ */
+function mae_v3_query_draft_list_posts() {
+    $statuses = function_exists( 'caast_workflow_get_editor_query_statuses' )
+        ? caast_workflow_get_editor_query_statuses()
+        : array( 'publish', 'draft', 'pending', 'archive' );
+
+    $query_args = array(
+        'post_type'              => 'author_profile',
+        'posts_per_page'         => -1,
+        'post_status'            => $statuses,
+        'orderby'                => 'modified',
+        'order'                  => 'DESC',
+        'suppress_filters'       => true,
+        'no_found_rows'          => true,
+        'update_post_meta_cache' => false,
+        'update_post_term_cache' => false,
+    );
+
+    if ( ! current_user_can( 'edit_others_posts' ) ) {
+        $query_args['author'] = get_current_user_id();
+    }
+
+    return get_posts( $query_args );
+}
+
+/**
+ * Handle Author Content Editor form submission (save, publish, placement, delete).
+ */
+function mae_v3_handle_submission() {
+    if ( ! isset( $_POST['action'] ) || 'mae_v3_submit' !== $_POST['action'] ) {
+        return;
+    }
+
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+        wp_safe_redirect( add_query_arg( 'status', 'error_permissions', wp_get_referer() ) );
+        exit;
+    }
+
+    if ( ! isset( $_POST['_wpnonce_author_content'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['_wpnonce_author_content'] ) ), 'author_content_submission' ) ) {
+        wp_die( 'Security check failed. Please refresh the page and try again.' );
+    }
+
+    $selected_author_id  = isset( $_POST['selected_author_id'] ) ? intval( $_POST['selected_author_id'] ) : 0;
+    $new_author_name     = isset( $_POST['new_author_name'] ) ? sanitize_text_field( wp_unslash( $_POST['new_author_name'] ) ) : '';
+    $author_subtitle     = isset( $_POST['author_subtitle'] ) ? sanitize_text_field( wp_unslash( $_POST['author_subtitle'] ) ) : '';
+    $author_content      = isset( $_POST['author_content'] ) ? wp_kses_post( wp_unslash( $_POST['author_content'] ) ) : '';
+    $author_photo_id     = isset( $_POST['author_photo_id'] ) ? intval( $_POST['author_photo_id'] ) : 0;
+    $author_photo_url    = isset( $_POST['author_photo_url'] ) ? esc_url_raw( wp_unslash( $_POST['author_photo_url'] ) ) : '';
+    $author_category_slug = isset( $_POST['author_category'] ) ? sanitize_text_field( wp_unslash( $_POST['author_category'] ) ) : '';
+    $author_level_slug    = isset( $_POST['author_level'] ) ? sanitize_text_field( wp_unslash( $_POST['author_level'] ) ) : '';
+    $placement_categories = mae_v3_get_placement_slugs_from_post();
+    $insert_link          = isset( $_POST['insert_link'] ) ? esc_url_raw( wp_unslash( $_POST['insert_link'] ) ) : '';
+    $submit_action        = isset( $_POST['submit_author_action'] ) ? sanitize_text_field( wp_unslash( $_POST['submit_author_action'] ) ) : 'save';
+    $placement_action     = isset( $_POST['placement_action'] ) ? sanitize_text_field( wp_unslash( $_POST['placement_action'] ) ) : '';
+    $publish_mode         = mae_v3_resolve_publish_mode_from_post();
+    $replace_mode         = ( 'replace' === $publish_mode );
+
+    // Attach Image #1/#2/#3 (section) + Foot Images #1/#2/#3.
+    $attach_photos = mae_v3_collect_attach_images_from_post( 'attach_photo', mae_v3_get_section_image_meta_map() );
+    $attach_foot   = mae_v3_collect_attach_images_from_post( 'attach_foot', mae_v3_get_foot_image_meta_map() );
+    $attach_right  = mae_v3_collect_attach_images_from_post( 'attach_right', mae_v3_get_right_section_image_meta_map() );
+
+    $existing_post_id = isset( $_POST['author_post_id'] ) ? intval( $_POST['author_post_id'] ) : 0;
+    if ( $existing_post_id <= 0 && $selected_author_id > 0 ) {
+        $existing_post_id = $selected_author_id;
+    }
+
+    // Add mode (default): keep published fields when submitted values are empty.
+    if ( $existing_post_id > 0 && ! $replace_mode ) {
+        $existing_post = get_post( $existing_post_id );
+        if ( $existing_post && 'author_profile' === $existing_post->post_type ) {
+            if ( '' === trim( wp_strip_all_tags( (string) $author_content ) ) ) {
+                $author_content = $existing_post->post_content;
+            }
+            if ( '' === $new_author_name ) {
+                $new_author_name = $existing_post->post_title;
+            }
+            if ( '' === $author_subtitle ) {
+                $author_subtitle = (string) get_post_meta( $existing_post_id, 'author_subtitle', true );
+            }
+            if ( $author_photo_id <= 0 && '' === $author_photo_url ) {
+                $author_photo_id  = (int) get_post_meta( $existing_post_id, 'author_photo_id', true );
+                $author_photo_url = (string) get_post_meta( $existing_post_id, 'author_photo_url', true );
+                if ( $author_photo_id <= 0 ) {
+                    $author_photo_id = (int) get_post_thumbnail_id( $existing_post_id );
+                }
+                if ( '' === $author_photo_url && $author_photo_id > 0 ) {
+                    $author_photo_url = (string) wp_get_attachment_url( $author_photo_id );
+                }
+            }
+            if ( '' === $insert_link ) {
+                $insert_link = (string) get_post_meta( $existing_post_id, 'insert_link', true );
+            }
+            if ( '' === $author_category_slug ) {
+                $cats = wp_get_post_terms( $existing_post_id, 'author_category', array( 'fields' => 'slugs' ) );
+                if ( ! is_wp_error( $cats ) && ! empty( $cats ) ) {
+                    $author_category_slug = $cats[0];
+                }
+            }
+            if ( '' === $author_level_slug ) {
+                $levels = wp_get_post_terms( $existing_post_id, 'author_level', array( 'fields' => 'slugs' ) );
+                if ( ! is_wp_error( $levels ) && ! empty( $levels ) ) {
+                    $author_level_slug = $levels[0];
+                }
+            }
+        }
+    }
+
+    $post_title = '';
+    if ( '' !== $new_author_name ) {
+        $post_title = $new_author_name;
+    } elseif ( $existing_post_id > 0 ) {
+        $existing_author = get_post( $existing_post_id );
+        if ( $existing_author ) {
+            $post_title = $existing_author->post_title;
+        }
+    }
+
+    if ( '' === $post_title && $existing_post_id <= 0 ) {
+        wp_safe_redirect( add_query_arg( 'status', 'error_empty_title', wp_get_referer() ) );
+        exit;
+    }
+
+    $redirect_status = 'error';
+    $post_status     = 'draft';
+    $skip_save       = false;
+    $result_id       = 0;
+
+    if ( 'publish_placement' === $placement_action ) {
+        if ( $existing_post_id <= 0 ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_no_author_selected_for_placement', wp_get_referer() ) );
+            exit;
+        }
+        if ( empty( $placement_categories ) ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_no_placement_selected', wp_get_referer() ) );
+            exit;
+        }
+        if ( ! current_user_can( 'publish_posts' ) ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_permissions', wp_get_referer() ) );
+            exit;
+        }
+
+        $update_data = array(
+            'ID'           => $existing_post_id,
+            'post_title'   => $post_title,
+            'post_content' => $author_content,
+            'post_status'  => 'publish',
+        );
+        $result_id = wp_update_post( $update_data, true );
+        if ( is_wp_error( $result_id ) ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_author_db', wp_get_referer() ) );
+            exit;
+        }
+        update_post_meta( $existing_post_id, 'author_subtitle', $author_subtitle );
+        update_post_meta( $existing_post_id, 'author_photo_id', $author_photo_id );
+        update_post_meta( $existing_post_id, 'author_photo_url', $author_photo_url );
+        update_post_meta( $existing_post_id, 'insert_link', $insert_link );
+        if ( $author_photo_id > 0 ) {
+            set_post_thumbnail( $existing_post_id, $author_photo_id );
+        }
+        mae_v3_save_attach_images( $existing_post_id, $attach_photos, $replace_mode );
+        mae_v3_save_attach_images( $existing_post_id, $attach_foot, $replace_mode );
+        mae_v3_save_attach_images( $existing_post_id, $attach_right, $replace_mode );
+        if ( ! empty( $author_category_slug ) ) {
+            wp_set_object_terms( $existing_post_id, $author_category_slug, 'author_category' );
+        }
+        if ( ! empty( $author_level_slug ) ) {
+            wp_set_object_terms( $existing_post_id, $author_level_slug, 'author_level' );
+        }
+        wp_set_object_terms( $existing_post_id, $placement_categories, 'placement_category' );
+        $redirect_status = 'author_published_to_placement';
+        $skip_save       = true;
+        $result_id       = $existing_post_id;
+    } elseif ( 'delete' === $submit_action ) {
+        if ( $existing_post_id <= 0 ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_no_content_to_delete', wp_get_referer() ) );
+            exit;
+        }
+        if ( ! current_user_can( 'delete_posts' ) ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_permissions', wp_get_referer() ) );
+            exit;
+        }
+        if ( wp_delete_post( $existing_post_id, true ) ) {
+            wp_safe_redirect( add_query_arg( 'status', 'author_deleted', wp_get_referer() ) );
+        } else {
+            wp_safe_redirect( add_query_arg( 'status', 'error_author_delete', wp_get_referer() ) );
+        }
+        exit;
+    } elseif ( function_exists( 'caast_workflow_resolve_submission' ) ) {
+        $resolved = caast_workflow_resolve_submission(
+            $submit_action,
+            'author',
+            array( 'can_publish' => current_user_can( 'publish_posts' ) )
+        );
+        if ( $resolved && 'save' === $resolved['type'] ) {
+            $post_status     = $resolved['post_status'];
+            $redirect_status = $resolved['redirect_status'];
+        }
+    } elseif ( 'publish' === $submit_action ) {
+        if ( current_user_can( 'publish_posts' ) ) {
+            $post_status     = 'publish';
+            $redirect_status = 'author_published';
+        } else {
+            $post_status     = 'pending';
+            $redirect_status = 'author_pending_review';
+        }
+    } elseif ( 'save' === $submit_action ) {
+        $post_status     = 'draft';
+        $redirect_status = 'author_saved_draft';
+    } elseif ( 'unpublish' === $submit_action ) {
+        $post_status     = 'draft';
+        $redirect_status = 'author_unpublished';
+    } elseif ( 'archive' === $submit_action ) {
+        $post_status     = get_post_status_object( 'archive' ) ? 'archive' : 'draft';
+        $redirect_status = 'author_archived';
+    }
+
+    if ( ! $skip_save ) {
+        $post_data = array(
+            'post_title'   => $post_title,
+            'post_content' => $author_content,
+            'post_status'  => $post_status,
+            'post_type'    => 'author_profile',
+            'post_author'  => get_current_user_id(),
+        );
+
+        if ( $existing_post_id > 0 ) {
+            $post_data['ID'] = $existing_post_id;
+            $result_id       = wp_update_post( $post_data, true );
+        } else {
+            $result_id = wp_insert_post( $post_data, true );
+        }
+
+        if ( is_wp_error( $result_id ) || ! $result_id ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_author_db', wp_get_referer() ) );
+            exit;
+        }
+
+        update_post_meta( $result_id, 'author_subtitle', $author_subtitle );
+        update_post_meta( $result_id, 'author_photo_id', $author_photo_id );
+        update_post_meta( $result_id, 'author_photo_url', $author_photo_url );
+        update_post_meta( $result_id, 'insert_link', $insert_link );
+
+        if ( $author_photo_id > 0 ) {
+            set_post_thumbnail( $result_id, $author_photo_id );
+        }
+
+        mae_v3_save_attach_images( $result_id, $attach_photos, $replace_mode );
+        mae_v3_save_attach_images( $result_id, $attach_foot, $replace_mode );
+        mae_v3_save_attach_images( $result_id, $attach_right, $replace_mode );
+
+        if ( ! empty( $author_category_slug ) ) {
+            wp_set_object_terms( $result_id, $author_category_slug, 'author_category' );
+        } elseif ( $replace_mode ) {
+            wp_set_object_terms( $result_id, null, 'author_category' );
+        }
+
+        if ( ! empty( $author_level_slug ) ) {
+            wp_set_object_terms( $result_id, $author_level_slug, 'author_level' );
+        } elseif ( $replace_mode ) {
+            wp_set_object_terms( $result_id, null, 'author_level' );
+        }
+
+        if ( ! empty( $placement_categories ) ) {
+            wp_set_object_terms( $result_id, $placement_categories, 'placement_category' );
+        } elseif ( $replace_mode ) {
+            wp_set_object_terms( $result_id, null, 'placement_category' );
+        }
+    }
+
+    $redirect_args = array( 'status' => $redirect_status );
+    if ( $result_id > 0 ) {
+        $redirect_args['author_id'] = $result_id;
+    }
+    wp_safe_redirect( add_query_arg( $redirect_args, wp_get_referer() ) );
+    exit;
+}
+add_action( 'admin_post_mae_v3_submit', 'mae_v3_handle_submission' );
+add_action( 'admin_post_nopriv_mae_v3_submit', 'mae_v3_handle_submission' );
+
+// AJAX: list author_profile posts for Generated Drafts dropdown.
+add_action( 'wp_ajax_mae_v3_get_draft_titles', 'mae_v3_get_draft_titles_callback' );
+function mae_v3_get_draft_titles_callback() {
+    if ( ! check_ajax_referer( 'mae_v3_editor', 'nonce', false ) ) {
+        wp_send_json_error( 'Nonce verification failed.' );
+    }
+
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+        wp_send_json_error( 'Permission denied.' );
+    }
+
+    $posts  = mae_v3_query_draft_list_posts();
+    $titles = array();
+    foreach ( $posts as $post ) {
+        $titles[] = array(
+            'id'     => $post->ID,
+            'title'  => $post->post_title,
+            'status' => $post->post_status,
+            'is_ai'  => (bool) get_post_meta( $post->ID, '_mae_v3_ai_generated_draft', true ),
+        );
+    }
+
+    wp_send_json_success( array( 'drafts' => $titles ) );
+}
 
 // AJAX handler for saving drafts (main editor form)
 function mae_v3_save_draft_callback() {
@@ -1770,6 +2175,329 @@ function mae_v3_publish_content_callback() {
 }
 add_action( 'wp_ajax_mae_v3_publish_content', 'mae_v3_publish_content_callback' );
 
+/**
+ * Allowed author dashboard placement slugs.
+ *
+ * @return string[]
+ */
+function mae_v3_get_allowed_placement_slugs() {
+	return array(
+		'home-left-section-1',
+		'home-left-foot-images',
+		'home-right-section-1',
+		'home-right-section-images',
+	);
+}
+
+/**
+ * Ticked placement slugs from the submitted form (checkbox array or legacy single value).
+ *
+ * @return string[]
+ */
+function mae_v3_get_placement_slugs_from_post() {
+	if ( ! isset( $_POST['placement_category'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing
+		return array();
+	}
+
+	$raw   = (array) wp_unslash( $_POST['placement_category'] ); // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+	$slugs = array();
+	foreach ( $raw as $value ) {
+		$slug = sanitize_title( (string) $value );
+		if ( '' !== $slug ) {
+			$slugs[] = $slug;
+		}
+	}
+
+	return array_values( array_unique( array_intersect( $slugs, mae_v3_get_allowed_placement_slugs() ) ) );
+}
+
+/**
+ * Sanitize Insert Link (internal path or absolute URL).
+ *
+ * @param string $url Raw link.
+ * @return string
+ */
+function mae_v3_sanitize_insert_link( $url ) {
+	$url = trim( (string) $url );
+	if ( '' === $url ) {
+		return '';
+	}
+	return esc_url_raw( $url );
+}
+
+/**
+ * Meta key map for Home Left Section 1 article images.
+ *
+ * @return array<int,array{id_key:string,url_key:string,link_key:string}>
+ */
+function mae_v3_get_section_image_meta_map() {
+	return array(
+		1 => array(
+			'id_key'   => '_caast_slot_hero_id',
+			'url_key'  => '_caast_slot_hero_url',
+			'link_key' => '_caast_slot_hero_link',
+		),
+		2 => array(
+			'id_key'   => '_caast_slot_banner_id',
+			'url_key'  => '_caast_slot_banner_url',
+			'link_key' => '_caast_slot_banner_link',
+		),
+		3 => array(
+			'id_key'   => '_caast_slot_banner2_id',
+			'url_key'  => '_caast_slot_banner2_url',
+			'link_key' => '_caast_slot_banner2_link',
+		),
+	);
+}
+
+/**
+ * Meta key map for Home Left Foot Images.
+ *
+ * @return array<int,array{id_key:string,url_key:string,link_key:string}>
+ */
+function mae_v3_get_foot_image_meta_map() {
+	$map = array();
+	for ( $i = 1; $i <= 3; $i++ ) {
+		$map[ $i ] = array(
+			'id_key'   => '_caast_foot_image_' . $i . '_id',
+			'url_key'  => '_caast_foot_image_' . $i . '_url',
+			'link_key' => '_caast_foot_image_' . $i . '_link',
+		);
+	}
+	return $map;
+}
+
+/**
+ * Meta key map for Home Right Section Images (inline every 10 listings).
+ *
+ * @return array<int,array{id_key:string,url_key:string,link_key:string}>
+ */
+function mae_v3_get_right_section_image_meta_map() {
+	$map = array();
+	for ( $i = 1; $i <= 3; $i++ ) {
+		$map[ $i ] = array(
+			'id_key'   => '_caast_right_section_image_' . $i . '_id',
+			'url_key'  => '_caast_right_section_image_' . $i . '_url',
+			'link_key' => '_caast_right_section_image_' . $i . '_link',
+		);
+	}
+	return $map;
+}
+
+/**
+ * Read image slot set from post meta.
+ *
+ * @param int   $post_id Post ID.
+ * @param array $map     Meta key map.
+ * @return array<int,array{id:int,url:string,link:string}>
+ */
+function mae_v3_read_image_slot_map( $post_id, $map ) {
+	$post_id = (int) $post_id;
+	$out     = array();
+
+	foreach ( $map as $index => $keys ) {
+		$id   = $post_id > 0 ? (int) get_post_meta( $post_id, $keys['id_key'], true ) : 0;
+		$url  = $post_id > 0 ? (string) get_post_meta( $post_id, $keys['url_key'], true ) : '';
+		$link = $post_id > 0 ? (string) get_post_meta( $post_id, $keys['link_key'], true ) : '';
+
+		if ( $id > 0 && '' === $url ) {
+			$url = (string) wp_get_attachment_url( $id );
+		}
+
+		if ( $id <= 0 && '' !== $url ) {
+			$found_id = attachment_url_to_postid( $url );
+			if ( $found_id > 0 ) {
+				$id = (int) $found_id;
+			}
+		}
+
+		$out[ $index ] = array(
+			'id'   => $id,
+			'url'  => $url,
+			'link' => $link,
+		);
+	}
+
+	return $out;
+}
+
+/**
+ * Get Attach Image #1/#2/#3 data for article sections.
+ *
+ * @param int $post_id Author post ID.
+ * @return array<int,array{id:int,url:string,link:string}>
+ */
+function mae_v3_get_author_attach_photos( $post_id ) {
+	return mae_v3_read_image_slot_map( $post_id, mae_v3_get_section_image_meta_map() );
+}
+
+/**
+ * Get Home Left Foot Images #1/#2/#3.
+ *
+ * @param int $post_id Author post ID.
+ * @return array<int,array{id:int,url:string,link:string}>
+ */
+function mae_v3_get_author_attach_foot_images( $post_id ) {
+	return mae_v3_read_image_slot_map( $post_id, mae_v3_get_foot_image_meta_map() );
+}
+
+/**
+ * Get Home Right Section Images #1/#2/#3.
+ *
+ * @param int $post_id Author post ID.
+ * @return array<int,array{id:int,url:string,link:string}>
+ */
+function mae_v3_get_author_attach_right_section_images( $post_id ) {
+	return mae_v3_read_image_slot_map( $post_id, mae_v3_get_right_section_image_meta_map() );
+}
+
+/**
+ * Collect attach image fields from POST.
+ *
+ * @param string $prefix Field name prefix (attach_photo|attach_foot).
+ * @param array  $map    Meta key map.
+ * @return array<int,array{id:int,url:string,link:string,id_key:string,url_key:string,link_key:string}>
+ */
+function mae_v3_collect_attach_images_from_post( $prefix, $map ) {
+	$out = array();
+	foreach ( $map as $index => $keys ) {
+		$id_key  = $prefix . '_' . $index . '_id';
+		$url_key = $prefix . '_' . $index . '_url';
+		$link_key = $prefix . '_' . $index . '_link';
+		$out[ $index ] = array(
+			'id'       => isset( $_POST[ $id_key ] ) ? intval( $_POST[ $id_key ] ) : 0, // phpcs:ignore WordPress.Security.NonceVerification.Missing
+			'url'      => isset( $_POST[ $url_key ] ) ? esc_url_raw( wp_unslash( $_POST[ $url_key ] ) ) : '', // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+			'link'     => isset( $_POST[ $link_key ] ) ? mae_v3_sanitize_insert_link( wp_unslash( $_POST[ $link_key ] ) ) : '', // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+			'id_key'   => $keys['id_key'],
+			'url_key'  => $keys['url_key'],
+			'link_key' => $keys['link_key'],
+		);
+	}
+	return $out;
+}
+
+/**
+ * Resolve publish mode from Add / Replace checkboxes.
+ * Default is Add (do not wipe published content).
+ *
+ * @return string add|replace
+ */
+function mae_v3_resolve_publish_mode_from_post() {
+	$replace = ! empty( $_POST['publish_mode_replace'] ); // phpcs:ignore WordPress.Security.NonceVerification.Missing
+	$add     = ! empty( $_POST['publish_mode_add'] ); // phpcs:ignore WordPress.Security.NonceVerification.Missing
+
+	if ( $replace ) {
+		return 'replace';
+	}
+	if ( $add ) {
+		return 'add';
+	}
+	return 'add';
+}
+
+/**
+ * Persist attach image slots to post meta.
+ *
+ * @param int   $post_id       Post ID.
+ * @param array $images        Collected image rows.
+ * @param bool  $replace_mode  When false (Add), skip empty slots so published images stay.
+ */
+function mae_v3_save_attach_images( $post_id, $images, $replace_mode = true ) {
+	$post_id = (int) $post_id;
+	if ( $post_id <= 0 || empty( $images ) || ! is_array( $images ) ) {
+		return;
+	}
+
+	foreach ( $images as $photo ) {
+		$photo_id   = (int) $photo['id'];
+		$photo_url  = (string) $photo['url'];
+		$photo_link = isset( $photo['link'] ) ? (string) $photo['link'] : '';
+		if ( $photo_id > 0 && '' === $photo_url ) {
+			$photo_url = (string) wp_get_attachment_url( $photo_id );
+		}
+
+		$has_new = ( $photo_id > 0 || '' !== $photo_url || '' !== $photo_link );
+		if ( ! $replace_mode && ! $has_new ) {
+			continue;
+		}
+
+		update_post_meta( $post_id, $photo['id_key'], $photo_id );
+		update_post_meta( $post_id, $photo['url_key'], $photo_url );
+		update_post_meta( $post_id, $photo['link_key'], $photo_link );
+	}
+}
+
+/**
+ * Render one Attach Image row (Browse | Insert Link | Upload).
+ *
+ * @param array{prefix:string,index:int,id?:int,url?:string,link?:string,position?:string} $args Row args.
+ */
+function mae_v3_render_attach_image_row( $args ) {
+	$prefix   = isset( $args['prefix'] ) ? (string) $args['prefix'] : 'attach_photo';
+	$index    = isset( $args['index'] ) ? (int) $args['index'] : 1;
+	$id       = isset( $args['id'] ) ? (int) $args['id'] : 0;
+	$url      = isset( $args['url'] ) ? (string) $args['url'] : '';
+	$link     = isset( $args['link'] ) ? (string) $args['link'] : '';
+	$position = isset( $args['position'] ) ? (string) $args['position'] : '';
+
+	$id_attr   = $prefix . '_' . $index . '_id';
+	$url_attr  = $prefix . '_' . $index . '_url';
+	$link_attr = $prefix . '_' . $index . '_link';
+	$preview_id = str_replace( '_', '-', $prefix ) . '-' . $index . '-preview';
+
+	$label = 'Attach Image #' . $index;
+	if ( '' !== $position ) {
+		$label .= ' (' . $position . ')';
+	}
+	?>
+	<div class="caast-attach-image-row" data-attach-prefix="<?php echo esc_attr( $prefix ); ?>" data-photo-index="<?php echo esc_attr( (string) $index ); ?>">
+		<label class="caast-label" for="<?php echo esc_attr( $url_attr ); ?>"><?php echo esc_html( $label ); ?></label>
+		<div class="mt-1 caast-attach-image-controls">
+			<input type="text" id="<?php echo esc_attr( $url_attr ); ?>" name="<?php echo esc_attr( $url_attr ); ?>" class="caast-input mae-dashboard-input caast-attach-image-browse attach-photo-url" placeholder="Browse Image #<?php echo esc_attr( (string) $index ); ?>" readonly value="<?php echo esc_url( $url ); ?>" />
+			<input type="hidden" id="<?php echo esc_attr( $id_attr ); ?>" name="<?php echo esc_attr( $id_attr ); ?>" class="attach-photo-id" value="<?php echo esc_attr( (string) $id ); ?>" />
+			<input type="url" id="<?php echo esc_attr( $link_attr ); ?>" name="<?php echo esc_attr( $link_attr ); ?>" class="caast-input mae-dashboard-input caast-attach-image-link attach-photo-link" placeholder="Insert Link" value="<?php echo esc_attr( $link ); ?>" />
+			<button type="button" class="caast-btn caast-btn--secondary browse-attach-photo" data-attach-prefix="<?php echo esc_attr( $prefix ); ?>" data-photo-index="<?php echo esc_attr( (string) $index ); ?>">Upload</button>
+		</div>
+		<div id="<?php echo esc_attr( $preview_id ); ?>" class="mt-2 text-center attach-photo-preview" style="<?php echo '' === $url ? 'display:none;' : ''; ?>">
+			<?php if ( '' !== $url ) : ?>
+				<img src="<?php echo esc_url( $url ); ?>" alt="Image #<?php echo esc_attr( (string) $index ); ?> Preview" style="max-width: 150px; height: auto; display: inline-block; margin-bottom: 5px;" />
+				<button type="button" class="remove-attach-photo text-red-500 hover:text-red-700 text-xs mt-1 rounded-none block mx-auto" data-attach-prefix="<?php echo esc_attr( $prefix ); ?>" data-photo-index="<?php echo esc_attr( (string) $index ); ?>">Remove Image</button>
+			<?php endif; ?>
+		</div>
+	</div>
+	<?php
+}
+
+/**
+ * Flatten attach photos + foot images for AJAX / JS payloads.
+ *
+ * @param int $post_id Author post ID.
+ * @return array<string,int|string>
+ */
+function mae_v3_get_author_attach_photos_payload( $post_id ) {
+	$payload = array();
+
+	foreach ( mae_v3_get_author_attach_photos( $post_id ) as $index => $photo ) {
+		$payload[ 'attach_photo_' . $index . '_id' ]   = (int) $photo['id'];
+		$payload[ 'attach_photo_' . $index . '_url' ]  = (string) $photo['url'];
+		$payload[ 'attach_photo_' . $index . '_link' ] = (string) $photo['link'];
+	}
+
+	foreach ( mae_v3_get_author_attach_foot_images( $post_id ) as $index => $photo ) {
+		$payload[ 'attach_foot_' . $index . '_id' ]   = (int) $photo['id'];
+		$payload[ 'attach_foot_' . $index . '_url' ]  = (string) $photo['url'];
+		$payload[ 'attach_foot_' . $index . '_link' ] = (string) $photo['link'];
+	}
+
+	foreach ( mae_v3_get_author_attach_right_section_images( $post_id ) as $index => $photo ) {
+		$payload[ 'attach_right_' . $index . '_id' ]   = (int) $photo['id'];
+		$payload[ 'attach_right_' . $index . '_url' ]  = (string) $photo['url'];
+		$payload[ 'attach_right_' . $index . '_link' ] = (string) $photo['link'];
+	}
+
+	return $payload;
+}
+
 // AJAX handler for loading existing author content (main editor form)
 function mae_v3_load_content_callback() {
     if ( ! check_ajax_referer( 'mae_v3_editor', 'nonce', false ) ) {
@@ -1790,8 +2518,14 @@ function mae_v3_load_content_callback() {
 
     // Get custom fields
     $author_subtitle = get_post_meta( $post_id, 'author_subtitle', true );
-    $author_photo_id = get_post_meta( $post_id, 'author_photo_id', true ); // Assuming you save ID
-    $author_photo_url = get_post_meta( $post_id, 'author_photo_url', true ); // Assuming you save URL
+    $author_photo_id = (int) get_post_meta( $post_id, 'author_photo_id', true );
+    $author_photo_url = (string) get_post_meta( $post_id, 'author_photo_url', true );
+    if ( $author_photo_id <= 0 ) {
+        $author_photo_id = (int) get_post_thumbnail_id( $post_id );
+    }
+    if ( '' === $author_photo_url && $author_photo_id > 0 ) {
+        $author_photo_url = (string) wp_get_attachment_url( $author_photo_id );
+    }
     $insert_link     = get_post_meta( $post_id, 'insert_link', true );
 
     // Get categories, levels, and placement (slugs for display in select)
@@ -1799,20 +2533,86 @@ function mae_v3_load_content_callback() {
     $levels     = wp_get_post_terms( $post_id, 'author_level', array( 'fields' => 'slugs' ) );
     $placements = wp_get_post_terms( $post_id, 'placement_category', array( 'fields' => 'slugs' ) );
 
-    wp_send_json_success( array(
-        'post_title'      => $post->post_title,
-        'author_subtitle' => $author_subtitle,
-        'author_photo_id' => $author_photo_id, // Return ID
-        'author_photo_url' => $author_photo_url,
+    $payload = array(
+        'post_title'          => $post->post_title,
+        'author_subtitle'     => $author_subtitle,
+        'author_photo_id'     => $author_photo_id,
+        'author_photo_url'    => $author_photo_url,
         'author_body_content' => $post->post_content,
-        'author_category' => empty( $categories ) ? '' : $categories[0], // Assuming single category/level
-        'author_level'    => empty( $levels ) ? '' : $levels[0],
-        'placement_category' => empty( $placements ) ? '' : $placements[0], // Return placement category
-        'insert_link'     => $insert_link,
-        'post_status'     => $post->post_status, // Return post status
-    ) );
+        'post_content'        => $post->post_content,
+        'author_category'     => empty( $categories ) || is_wp_error( $categories ) ? '' : $categories[0],
+        'author_level'        => empty( $levels ) || is_wp_error( $levels ) ? '' : $levels[0],
+        'placement_category'  => empty( $placements ) || is_wp_error( $placements ) ? array( 'home-left-section-1' ) : array_values( $placements ),
+        'insert_link'         => $insert_link,
+        'post_status'         => $post->post_status,
+        'post_id'             => $post_id,
+    );
+
+    wp_send_json_success( array_merge( $payload, mae_v3_get_author_attach_photos_payload( $post_id ) ) );
 }
 add_action( 'wp_ajax_mae_v3_load_content', 'mae_v3_load_content_callback' );
+
+// AJAX handler for loading saved author content / agent drafts into the main editor.
+function mae_v3_load_draft_content_callback() {
+    if ( ! check_ajax_referer( 'mae_v3_editor', 'nonce', false ) ) {
+        wp_send_json_error( 'Nonce verification failed.' );
+    }
+
+    $post_id    = isset( $_POST['post_id'] ) ? intval( $_POST['post_id'] ) : 0;
+    $draft_type = isset( $_POST['draft_type'] ) ? sanitize_text_field( wp_unslash( $_POST['draft_type'] ) ) : 'main';
+
+    $post = get_post( $post_id );
+    if ( ! $post || $post->post_type !== 'author_profile' ) {
+        wp_send_json_error( 'Author profile not found.' );
+    }
+
+    $content_to_return = $post->post_content;
+    if ( 'draft1' === $draft_type ) {
+        $content_to_return = get_post_meta( $post_id, 'agent_1_draft_content', true );
+    } elseif ( 'draft2' === $draft_type ) {
+        $content_to_return = get_post_meta( $post_id, 'agent_2_draft_content', true );
+    } elseif ( 'draft3' === $draft_type ) {
+        $content_to_return = get_post_meta( $post_id, 'agent_3_draft_content', true );
+    }
+
+    if ( ! is_string( $content_to_return ) || $content_to_return === '' ) {
+        $content_to_return = $post->post_content;
+    }
+
+    $author_subtitle  = get_post_meta( $post_id, 'author_subtitle', true );
+    $author_photo_id  = (int) get_post_meta( $post_id, 'author_photo_id', true );
+    $author_photo_url = (string) get_post_meta( $post_id, 'author_photo_url', true );
+    if ( $author_photo_id <= 0 ) {
+        $author_photo_id = (int) get_post_thumbnail_id( $post_id );
+    }
+    if ( '' === $author_photo_url && $author_photo_id > 0 ) {
+        $author_photo_url = (string) wp_get_attachment_url( $author_photo_id );
+    }
+    $insert_link      = get_post_meta( $post_id, 'insert_link', true );
+    $categories       = wp_get_post_terms( $post_id, 'author_category', array( 'fields' => 'slugs' ) );
+    $levels           = wp_get_post_terms( $post_id, 'author_level', array( 'fields' => 'slugs' ) );
+    $placements       = wp_get_post_terms( $post_id, 'placement_category', array( 'fields' => 'slugs' ) );
+
+    $payload = array(
+        'title'               => $post->post_title,
+        'post_title'          => $post->post_title,
+        'content'             => apply_filters( 'the_content', $content_to_return ),
+        'post_content'        => apply_filters( 'the_content', $content_to_return ),
+        'author_body_content' => apply_filters( 'the_content', $content_to_return ),
+        'author_subtitle'     => $author_subtitle,
+        'author_photo_id'     => $author_photo_id,
+        'author_photo_url'    => $author_photo_url,
+        'author_category'     => empty( $categories ) || is_wp_error( $categories ) ? '' : $categories[0],
+        'author_level'        => empty( $levels ) || is_wp_error( $levels ) ? '' : $levels[0],
+        'placement_category'  => empty( $placements ) || is_wp_error( $placements ) ? array( 'home-left-section-1' ) : array_values( $placements ),
+        'insert_link'         => $insert_link,
+        'post_status'         => $post->post_status,
+        'post_id'             => $post_id,
+    );
+
+    wp_send_json_success( array_merge( $payload, mae_v3_get_author_attach_photos_payload( $post_id ) ) );
+}
+add_action( 'wp_ajax_mae_v3_load_draft_content', 'mae_v3_load_draft_content_callback' );
 
 
 // AJAX handler for generating content from AI (individual agent)
@@ -2001,30 +2801,43 @@ function mae_v3_save_generated_content_as_draft_callback() {
         wp_send_json_error( 'Nonce verification failed.' );
     }
 
-    $post_title = sanitize_text_field( $_POST['post_title'] );
-    $post_content = wp_kses_post( $_POST['post_content'] );
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+        wp_send_json_error( 'You do not have permission to save drafts.' );
+    }
+
+    $post_title   = isset( $_POST['post_title'] ) ? sanitize_text_field( wp_unslash( $_POST['post_title'] ) ) : '';
+    $post_content = isset( $_POST['post_content'] ) ? wp_kses_post( wp_unslash( $_POST['post_content'] ) ) : '';
 
     if ( empty( $post_title ) || empty( $post_content ) ) {
         wp_send_json_error( 'Title and content cannot be empty.' );
     }
 
     $new_post_data = array(
-        'post_title'    => $post_title,
-        'post_content'  => $post_content,
-        'post_status'   => 'draft',
-        'post_type'     => 'author_profile', // Save as author_profile draft
+        'post_title'   => $post_title,
+        'post_content' => $post_content,
+        'post_status'  => 'draft',
+        'post_type'    => 'author_profile',
+        'post_author'  => get_current_user_id(),
     );
 
     $new_post_id = wp_insert_post( $new_post_data, true );
 
     if ( is_wp_error( $new_post_id ) ) {
         wp_send_json_error( $new_post_id->get_error_message() );
-    } else {
-        wp_send_json_success( array( 'message' => 'New draft created successfully!', 'post_id' => $new_post_id ) );
     }
+
+    update_post_meta( $new_post_id, '_mae_v3_ai_generated_draft', '1' );
+
+    wp_send_json_success(
+        array(
+            'message'     => 'New draft created successfully!',
+            'post_id'     => $new_post_id,
+            'post_title'  => $post_title,
+            'post_status' => 'draft',
+        )
+    );
 }
 add_action( 'wp_ajax_mae_v3_save_generated_content_as_draft', 'mae_v3_save_generated_content_as_draft_callback' );
-add_action( 'wp_ajax_nopriv_mae_v3_save_generated_content_as_draft', 'mae_v3_save_generated_content_as_draft_callback' );
 
 // ============================================================================
 // AJAX Handlers for Generated Drafts Management

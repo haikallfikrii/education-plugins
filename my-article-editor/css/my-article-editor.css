@@ -1,0 +1,104 @@
+/* Custom CSS for My Article Editor form */
+/* Override any global form styles that limit width */
+
+/* You can add custom CSS here if needed, beyond Tailwind. */
+/* For example, specific TinyMCE editor customizations */
+.wp-editor-wrap {
+    border-radius: 0 !important; /* Ensure no default rounded corners */
+    border: 1px solid #d1d5db !important; /* Tailwind gray-300 equivalent */
+}
+.wp-editor-area {
+    border-radius: 0 !important;
+    border: none !important;
+}
+
+/* Remove max-width limitation on forms - override any global CSS */
+/* Use high specificity to override any global form CSS */
+form#article-editor-form,
+#article-editor-form,
+body #article-editor-form,
+body form#article-editor-form,
+section form#article-editor-form,
+div form#article-editor-form {
+    max-width: none !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+}
+
+/* Ensure all form elements take full width */
+#article-editor-form input,
+#article-editor-form select,
+#article-editor-form textarea,
+#article-editor-form button {
+    max-width: 100% !important;
+}
+
+/* Ensure form content takes full width */
+#article-editor-form .grid {
+    width: 100%;
+}
+
+/* Responsive adjustments for different screen sizes */
+@media screen and (max-width: 768px) {
+    form#article-editor-form,
+    #article-editor-form,
+    body #article-editor-form,
+    body form#article-editor-form,
+    section form#article-editor-form,
+    div form#article-editor-form {
+        margin: 0 -10px !important;
+        padding: 0 10px !important;
+    }
+    
+    #article-editor-form .grid {
+        grid-template-columns: 1fr !important;
+    }
+    
+    #article-editor-form .md\:col-span-2 {
+        grid-column: span 1 !important;
+    }
+}
+
+/* Ensure TinyMCE editor is responsive and takes full width */
+.wp-editor-wrap {
+    margin-bottom: 1rem !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+}
+
+.wp-editor-container {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+}
+
+/* Placement checkbox list */
+.caast-placement-checkboxes .caast-checkbox-row {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 0.5rem;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0.125rem 0 !important;
+    text-align: left !important;
+    cursor: pointer;
+}
+.caast-placement-checkboxes .caast-placement-checkbox {
+    flex: 0 0 auto !important;
+    width: 1rem !important;
+    min-width: 1rem !important;
+    height: 1rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+.caast-placement-checkboxes .caast-checkbox-row span {
+    flex: 1 1 auto;
+    text-align: left !important;
+    white-space: normal;
+}

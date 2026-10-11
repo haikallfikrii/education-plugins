@@ -1,55 +1,23 @@
-/* Author Dashboard v3 — refinements beyond Tailwind CDN (visual only). */
+/**
+ * Author Dashboard v3 — plugin-specific overrides (shared layout in my-lesson-editor.css).
+ */
 
-.wp-editor-wrap {
-    border-radius: 0.75rem !important;
-    border: 1px solid #e5e7eb !important;
-    overflow: hidden;
-    box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.05);
-}
-.wp-editor-area {
-    border-radius: 0 !important;
-    border: none !important;
-}
-
-/* Form shell: let inner cards control width */
-#author-editor-form {
-    max-width: none !important;
-    width: 100% !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    background: transparent !important;
-    box-shadow: none !important;
-    border-radius: 0 !important;
-}
-
-#author-editor-form input,
-#author-editor-form select,
-#author-editor-form textarea {
-    max-width: 100% !important;
-}
-
-/* Book / author fields: clearer focus ring (matches Tailwind ring) */
-.mae-dashboard-input:focus {
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
-}
-
-/* Generate CTA: pulse while request is in flight (button is disabled by existing JS) */
 #start_full_automation:disabled {
     animation: mae-btn-pulse 1.25s ease-in-out infinite;
 }
+
 @keyframes mae-btn-pulse {
     0%,
     100% {
         filter: brightness(1);
-        box-shadow: 0 10px 15px -3px rgba(79, 70, 229, 0.35), 0 4px 6px -2px rgba(79, 70, 229, 0.15);
+        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
     }
     50% {
-        filter: brightness(1.06);
-        box-shadow: 0 12px 20px -3px rgba(79, 70, 229, 0.45), 0 6px 8px -2px rgba(79, 70, 229, 0.2);
+        filter: brightness(1.05);
+        box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35);
     }
 }
 
-/* Fallback: selection cards when peer utilities are unavailable in build */
 #task_author_intro:checked + span,
 #task_book_intro:checked + span,
 #task_chapter_vocab:checked + span,
@@ -59,21 +27,71 @@
 #task_final:checked + span,
 #task_class_activities:checked + span,
 #task_projects:checked + span {
-    border-color: #6366f1 !important;
-    background-color: #eef2ff !important;
-    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.08);
+    border-color: #3b82f6 !important;
+    background-color: #eff6ff !important;
+    box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.15);
 }
 
-/* Segmented difficulty: selected segment */
-input[name="difficulty_level"]:checked + span {
-    background-color: #fff !important;
-    color: #111827 !important;
-    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+.mae-dashboard-input:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 1px #3b82f6;
 }
 
-/* Document preview textarea: paper-like */
-.mae-doc-preview-textarea {
-    line-height: 1.65;
+/* Attach Image rows: narrower Browse + Upload, Insert Link in between */
+.caast-attach-images .caast-attach-image-row {
+    width: 100%;
 }
 
-/* Automation CTA: match Content Endpoint (lesson) flat gray .button-primary; avoid overriding core .button */
+.caast-attach-images .caast-attach-image-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.caast-attach-images .caast-attach-image-browse {
+    flex: 0 1 180px;
+    max-width: 180px;
+    min-width: 120px;
+}
+
+.caast-attach-images .caast-attach-image-link {
+    flex: 1 1 160px;
+    min-width: 140px;
+}
+
+.caast-attach-images .browse-attach-photo {
+    flex: 0 0 auto;
+    min-width: 88px;
+    width: auto;
+    padding-left: 0.85rem;
+    padding-right: 0.85rem;
+    white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+    .caast-attach-images .caast-attach-image-browse,
+    .caast-attach-images .caast-attach-image-link,
+    .caast-attach-images .browse-attach-photo {
+        flex: 1 1 100%;
+        max-width: 100%;
+    }
+}
+
+/* Publish mode: Add / Replace */
+.caast-publish-mode-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.875rem;
+    color: #334155;
+    cursor: pointer;
+    user-select: none;
+}
+
+.caast-publish-mode-check {
+    width: 1rem;
+    height: 1rem;
+    margin: 0;
+    accent-color: #2563eb;
+}

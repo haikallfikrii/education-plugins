@@ -1,8 +1,89 @@
 (function($) {
     // Book endpoint automation: use book_v3_data (localized) to avoid colliding with other plugins' globals.
-    function bookV3Ajax() {
-        return (typeof book_v3_data !== 'undefined' && book_v3_data) ? book_v3_data : myBookEditorAjax;
+    function bookEditorAjax() {
+        if (typeof myBookEditorAjax !== 'undefined' && myBookEditorAjax && myBookEditorAjax.ajaxurl) {
+            return myBookEditorAjax;
+        }
+        if (typeof book_v3_data !== 'undefined' && book_v3_data && book_v3_data.ajaxurl) {
+            return book_v3_data;
+        }
+        return null;
     }
+
+    function bookV3Ajax() {
+        return bookEditorAjax();
+    }
+
+    function isBookEditorPage() {
+        return $('#book-editor-form').length > 0;
+    }
+
+    function refreshBookDraftTitleSelect(selectedId) {
+        if (!isBookEditorPage()) {
+            return $.Deferred().resolve().promise();
+        }
+        var ajax = bookEditorAjax();
+        if (!ajax) {
+            return $.Deferred().reject().promise();
+        }
+        return $.ajax({
+            url: ajax.ajaxurl,
+            type: 'POST',
+            dataType: 'json',
+            data: {
+                action: 'my_book_editor_get_draft_titles',
+                nonce: ajax.nonce
+            }
+        }).done(function(response) {
+            if (!response || !response.success || !response.data || !Array.isArray(response.data.drafts)) {
+                return;
+            }
+            var $sel = $('#mbe_select_title_ce');
+            if (!$sel.length) {
+                return;
+            }
+            var current = selectedId || $sel.val();
+            $sel.find('option:not(:first)').remove();
+            var titleCounts = {};
+            response.data.drafts.forEach(function(draft) {
+                var key = (draft.title || '').toLowerCase();
+                titleCounts[key] = (titleCounts[key] || 0) + 1;
+            });
+            response.data.drafts.forEach(function(draft) {
+                var label = (draft.title || 'Untitled') + ' (' + ((window.caastWorkflow && window.caastWorkflow.formatStatusLabel) ? window.caastWorkflow.formatStatusLabel(draft.status || 'draft') : (draft.status || 'draft')) + ')';
+                if (titleCounts[(draft.title || '').toLowerCase()] > 1) {
+                    label += ' #' + draft.id;
+                }
+                $sel.append($('<option>', { value: String(draft.id), text: label }));
+            });
+            if (current) {
+                $sel.val(String(current));
+            }
+            if ($sel.val()) {
+                $('#mbe_draft_selection_container').removeClass('hidden');
+            }
+        });
+    }
+
+    function upsertBookDraftTitleOption(postId, title, status) {
+        if (!isBookEditorPage()) {
+            return;
+        }
+        var $sel = $('#mbe_select_title_ce');
+        var id = String(postId);
+        var label = title + ' (' + ((window.caastWorkflow && window.caastWorkflow.formatStatusLabel) ? window.caastWorkflow.formatStatusLabel(status || 'draft') : (status || 'draft')) + ')';
+        var $existing = $sel.find('option[value="' + id + '"]');
+        if ($existing.length) {
+            $existing.text(label);
+        } else {
+            $sel.append($('<option>', { value: id, text: label }));
+        }
+        $sel.val(id);
+        $('#mbe_draft_selection_container').removeClass('hidden');
+        $('#mbe_select_draft_ce').val('main');
+    }
+
+    window.mbeRefreshBookDraftTitles = refreshBookDraftTitleSelect;
 
     function bookEditorFormatAjaxErrorData(data) {
         if (data == null) {
@@ -64,7 +145,7 @@
     }
 
     // Copied Author-style async AJAX flow, adapted for Book selectors and task type.
-    $(document).on('click', '.generate-btn', async function(e) {
+    $(document).on('click', '.generate-btn, #start_full_automation', async function(e) {
         e.preventDefault();
         console.log('Book Automation started...');
 
@@ -85,7 +166,8 @@
 
         var bookName = getInputValueById('book_name').trim();
         var selectedModel = getInputValueById('llm_model_select') || 'deepseek_r1';
-        var difficultyLevel = $('input[name="difficulty_level"]:checked').val() || 'regular';
+        var difficultyLevel = ($('#difficulty_level_select').val() || $('input[name="difficulty_level"]:checked').val() || 'regular');
+        var gradeLevel = ($('#grade_level').val() || 'middle_school');
 
         if (!bookName) {
             $statusDiv.text('Please enter book name.').removeClass('hidden').css('color', 'red');
@@ -96,7 +178,8 @@
             book_name: bookName,
             model: selectedModel,
             task_type: 'book_introduction',
-            difficulty_level: difficultyLevel
+            difficulty_level: difficultyLevel,
+            grade_level: gradeLevel
         };
 
         $button.prop('disabled', true).addClass('mbe-generate-btn--busy');
@@ -121,22 +204,31 @@
 
             if (response && response.success) {
                 $statusDiv.text('Progress: Complete — content mapped to Title & Content below.').removeClass('hidden').css('color', 'green');
-                var payload = response.data && response.data.n8n_response ? response.data.n8n_response : null;
+                var d = response.data || {};
+                var payload = d.n8n_response != null ? d.n8n_response : null;
+                var title = (d.final_title || '').trim();
+                var content = (d.final_content != null && d.final_content !== '') ? String(d.final_content) : '';
                 var mapped = bookEditorExtractN8nFields(payload);
 
-                if (mapped.title || mapped.content) {
-                    $('#final_generated_title').val(mapped.title);
-                    $('#final_generated_content').val(mapped.content || (payload && typeof payload === 'object' ? JSON.stringify(payload, null, 2) : ''));
-                } else if (payload && typeof payload === 'object') {
-                    $('#final_generated_title').val('');
-                    $('#final_generated_content').val(JSON.stringify(payload, null, 2));
-                } else if (payload) {
-                    $('#final_generated_title').val('');
-                    $('#final_generated_content').val(String(payload));
-                } else {
-                    $('#final_generated_title').val('');
-                    $('#final_generated_content').val('No specific content returned from n8n, but process was successful.');
+                if (!title) {
+                    title = mapped.title;
                 }
+                if (!content) {
+                    content = mapped.content;
+                }
+                if (!title && bookName) {
+                    title = bookName;
+                }
+                if (!content && payload) {
+                    if (typeof payload === 'string') {
+                        content = payload;
+                    } else if (typeof payload === 'object') {
+                        content = JSON.stringify(payload, null, 2);
+                    }
+                }
+
+                $('#final_generated_title').val(title || '');
+                $('#final_generated_content').val(content || '');
             } else {
                 $statusDiv.text('Automation error: ' + bookEditorFormatAjaxErrorData(response && response.data)).removeClass('hidden').css('color', 'red');
                 console.error('Book automation backend error:', response);
@@ -207,16 +299,16 @@
 
             Swal.fire({
                 icon: 'success',
-                title: 'Berhasil!',
-                text: 'Konten berhasil dimuat ke editor utama.',
+                title: 'Success',
+                text: 'Content loaded into the main editor.',
                 timer: 2000,
                 showConfirmButton: false
             });
         } else {
             Swal.fire({
                 icon: 'warning',
-                title: 'Peringatan',
-                text: 'Tidak ada konten yang dihasilkan untuk dimuat.',
+                title: 'Warning',
+                text: 'No generated content to load. Run automation first.',
                 confirmButtonText: 'OK'
             });
         }
@@ -226,14 +318,20 @@
     $('#save_final_content_as_draft').on('click', function(e) {
         e.preventDefault();
 
-        var title = $('#final_generated_title').val();
-        var content = $('#final_generated_content').val();
+        var ajax = bookEditorAjax();
+        if (!ajax) {
+            console.error('Book editor AJAX config is missing.');
+            return;
+        }
 
-        if (title.length === 0 || content.length === 0) {
+        var title = ($('#final_generated_title').val() || '').trim();
+        var content = ($('#final_generated_content').val() || '').trim();
+
+        if (!title || !content) {
             Swal.fire({
                 icon: 'error',
-                title: 'Gagal',
-                text: 'Konten yang dihasilkan kosong. Silakan jalankan otomatisasi terlebih dahulu.',
+                title: 'Failed',
+                text: 'Generated content is empty. Please run automation first.',
                 confirmButtonText: 'OK'
             });
             return;
@@ -241,119 +339,126 @@
 
         var formData = new FormData();
         formData.append('action', 'my_book_editor_save_final_content_as_draft');
-        formData.append('nonce', myBookEditorAjax.nonce);
+        formData.append('nonce', ajax.nonce);
         formData.append('title', title);
         formData.append('content', content);
 
         $.ajax({
-            url: myBookEditorAjax.ajaxurl,
+            url: ajax.ajaxurl,
             type: 'POST',
             data: formData,
             processData: false,
             contentType: false,
-            success: function(response) {
-                if (response.success) {
-                    Swal.fire({
-                        icon: 'success',
-                        title: 'Berhasil!',
-                        text: 'Konten berhasil disimpan sebagai draf baru dengan ID ' + response.data.post_id + '.',
-                        confirmButtonText: 'OK'
-                    });
-                } else {
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Gagal',
-                        text: 'Error: ' + (response.data || 'Terjadi kesalahan yang tidak diketahui.'),
-                        confirmButtonText: 'OK'
-                    });
-                }
-            },
-            error: function() {
+            dataType: 'json'
+        }).done(function(response) {
+            if (response && response.success && response.data) {
+                var postId = response.data.post_id;
+                var postTitle = response.data.post_title || title;
+                var postStatus = response.data.post_status || 'draft';
+                upsertBookDraftTitleOption(postId, postTitle, postStatus);
+                $(document).trigger('mbe:drafts-changed', [postId]);
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Success',
+                    text: 'Draft saved and added to Generated Drafts Content. Load it from the main editor to review and publish.',
+                    confirmButtonText: 'OK'
+                });
+            } else {
                 Swal.fire({
                     icon: 'error',
-                    title: 'Gagal',
-                    text: 'AJAX Error: Gagal terhubung ke server.',
+                    title: 'Failed',
+                    text: 'Error: ' + bookEditorFormatAjaxErrorData(response && response.data),
                     confirmButtonText: 'OK'
                 });
             }
+        }).fail(function() {
+            Swal.fire({
+                icon: 'error',
+                title: 'Failed',
+                text: 'Could not connect to the server. Please try again.',
+                confirmButtonText: 'OK'
+            });
         });
     });
 
-    // --- Fungsionalitas Load Content dari Drafts (Automation Section) ---
+    // Load saved draft content into the main editor.
     $('#load_content_to_editor_from_draft').on('click', function(e) {
         e.preventDefault();
 
-        var postId = $('#select_title_ce').val();
-        var draftType = $('#select_draft_ce').val();
+        var ajax = bookEditorAjax();
+        if (!ajax) {
+            console.error('Book editor AJAX config is missing.');
+            return;
+        }
 
-        if (!postId || !draftType) {
+        var postId = $('#mbe_select_title_ce').val();
+        var draftType = ($('#mbe_select_draft_ce').val() || 'main').trim();
+
+        if (!postId) {
             Swal.fire({
                 icon: 'error',
-                title: 'Gagal',
-                text: 'Silakan pilih judul dan draft terlebih dahulu.',
+                title: 'Failed',
+                text: 'Please select a title first.',
                 confirmButtonText: 'OK'
             });
             return;
         }
 
         $.ajax({
-            url: myBookEditorAjax.ajaxurl,
+            url: ajax.ajaxurl,
             type: 'POST',
+            dataType: 'json',
             data: {
                 action: 'my_book_editor_load_draft_content',
-                nonce: myBookEditorAjax.nonce,
+                nonce: ajax.nonce,
                 post_id: postId,
-                draft_type: draftType
-            },
-            success: function(response) {
-                if (response.success) {
-                    var title = response.data.title;
-                    var content = response.data.content;
+                draft_type: draftType || 'main'
+            }
+        }).done(function(response) {
+            if (response && response.success && response.data) {
+                window.myBookEditorPopulateForm(response.data);
 
-                    if (title.length > 0) {
-                        $('#new_book_name').val(title);
-                    }
-
-                    if (content.length > 0) {
-                        if (tinymce.activeEditor && !tinymce.activeEditor.isHidden()) {
-                            tinymce.activeEditor.setContent(content);
-                        } else {
-                            $('#book_content').val(content);
-                        }
-                    }
-
-                    Swal.fire({
-                        icon: 'success',
-                        title: 'Berhasil!',
-                        text: 'Konten draft berhasil dimuat ke editor utama.',
-                        confirmButtonText: 'OK'
-                    });
-                } else {
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Gagal',
-                        text: 'Error: ' + (response.data || 'Terjadi kesalahan yang tidak diketahui.'),
-                        confirmButtonText: 'OK'
-                    });
-                }
-            },
-            error: function() {
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Success',
+                    text: 'Draft loaded into the main editor.',
+                    confirmButtonText: 'OK'
+                });
+            } else {
                 Swal.fire({
                     icon: 'error',
-                    title: 'Gagal',
-                    text: 'AJAX Error: Gagal memuat konten draft.',
+                    title: 'Failed',
+                    text: 'Error: ' + bookEditorFormatAjaxErrorData(response && response.data),
                     confirmButtonText: 'OK'
                 });
             }
+        }).fail(function() {
+            Swal.fire({
+                icon: 'error',
+                title: 'Failed',
+                text: 'Could not load draft content. Please try again.',
+                confirmButtonText: 'OK'
+            });
         });
     });
 
-    // Tampilkan/sembunyikan dropdown draft saat judul dipilih
-    $('#select_title_ce').on('change', function() {
+    // Show/hide draft type dropdown when a title is selected.
+    $('#mbe_select_title_ce').on('change', function() {
         if ($(this).val()) {
-            $('#draft_selection_container').removeClass('hidden');
+            $('#mbe_draft_selection_container').removeClass('hidden');
+            if (!$('#mbe_select_draft_ce').val()) {
+                $('#mbe_select_draft_ce').val('main');
+            }
         } else {
-            $('#draft_selection_container').addClass('hidden');
+            $('#mbe_draft_selection_container').addClass('hidden');
         }
     });
+
+    $(document).on('mbe:drafts-changed', function(e, selectedId) {
+        refreshBookDraftTitleSelect(selectedId);
+    });
+
+    if (isBookEditorPage()) {
+        refreshBookDraftTitleSelect();
+    }
 })(jQuery);

@@ -3,7 +3,7 @@
 Plugin Name: My Book Editor
 Plugin URI:  https://example.com/
 Description: A custom editor for book profiles, accessible via shortcode, with custom category and level dropdowns, and author selection.
-Version:     1.4.1
+Version:     1.4.5
 Author:      Muhamad Fikri Haikal
 Author URI:  https://caastedu.com/
 License:     GPL2
@@ -20,7 +20,7 @@ $my_book_editor_shortcode_used = false;
 
 // Define plugin constants
 if ( ! defined( 'MY_BOOK_EDITOR_VERSION' ) ) {
-    define( 'MY_BOOK_EDITOR_VERSION', '1.4.1' );
+    define( 'MY_BOOK_EDITOR_VERSION', '1.4.5' );
 }
 if ( ! defined( 'MY_BOOK_EDITOR_PLUGIN_URL' ) ) {
     define( 'MY_BOOK_EDITOR_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
@@ -186,7 +186,11 @@ function my_book_editor_register_cpt() {
         'exclude_from_search' => false,
         'publicly_queryable'  => true,
         'capability_type'     => 'post',
-        'rewrite'             => array( 'slug' => 'book-profile' ),
+        'rewrite'             => array(
+            'slug'       => 'book',
+            'with_front' => false,
+        ),
+        'has_archive'         => false,
         'query_var'           => true,
     );
     register_post_type( 'book_profile', $args );
@@ -350,11 +354,14 @@ register_activation_hook( __FILE__, 'my_book_editor_add_default_terms' );
  * Enqueue styles and scripts for the book editor.
  * This will only run if the shortcode is detected on the current page.
  */
-if ( ! function_exists( 'my_book_editor_enqueue_assets' ) ) {
-function my_book_editor_enqueue_assets() {
-    global $my_book_editor_shortcode_used;
+if ( ! function_exists( 'my_book_editor_enqueue_frontend_assets' ) ) {
+function my_book_editor_enqueue_frontend_assets() {
+    static $mbe_assets_enqueued = false;
+    if ( $mbe_assets_enqueued ) {
+        return;
+    }
+    $mbe_assets_enqueued = true;
 
-    if ( $my_book_editor_shortcode_used ) {
         wp_enqueue_style( 'my-book-editor-tailwind', 'https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css', array(), null );
 
         if ( defined( 'MY_LESSON_EDITOR_VERSION' ) && defined( 'MY_LESSON_EDITOR_PLUGIN_URL' ) && ! wp_style_is( 'my-lesson-editor-style', 'enqueued' ) ) {
@@ -378,11 +385,22 @@ function my_book_editor_enqueue_assets() {
             wp_enqueue_style( 'thickbox' );
         }
 
+        // Reusable Upload / Edit / Submit module shipped with my-lesson-editor.
+        if ( defined( 'MY_LESSON_EDITOR_PLUGIN_URL' ) ) {
+            wp_enqueue_script(
+                'mle-shared-uploader',
+                MY_LESSON_EDITOR_PLUGIN_URL . 'js/mle-shared-uploader.js',
+                array(),
+                defined( 'MY_LESSON_EDITOR_VERSION' ) ? MY_LESSON_EDITOR_VERSION : MY_BOOK_EDITOR_VERSION,
+                true
+            );
+        }
+
         // jQuery as explicit dependency; script runs in no-conflict mode via passed `$`.
         wp_enqueue_script(
             'my-book-editor-js',
             MY_BOOK_EDITOR_PLUGIN_URL . 'js/my-book-editor.js',
-            array( 'jquery' ),
+            array( 'jquery', 'mle-shared-uploader', 'caast-workflow-editor' ),
             MY_BOOK_EDITOR_VERSION,
             true
         );
@@ -430,12 +448,112 @@ function my_book_editor_enqueue_assets() {
                 'nonce'   => $book_nonce,
             )
         );
-    }
 }
 }
-add_action( 'wp_enqueue_scripts', 'my_book_editor_enqueue_assets' );
 
 
+
+/**
+ * Build editor form payload for a book_profile post.
+ *
+ * @param int    $book_id    Post ID.
+ * @param string $draft_type main|draft1|draft2|draft3.
+ * @return array<string,mixed>|null
+ */
+function my_book_editor_get_post_form_data( $book_id, $draft_type = 'main' ) {
+	$book_id = (int) $book_id;
+	$post    = get_post( $book_id );
+
+	if ( ! $post || 'book_profile' !== $post->post_type ) {
+		return null;
+	}
+
+	$content = $post->post_content;
+	if ( 'draft1' === $draft_type ) {
+		$content = get_post_meta( $book_id, 'agent_1_draft_content', true );
+	} elseif ( 'draft2' === $draft_type ) {
+		$content = get_post_meta( $book_id, 'agent_2_draft_content', true );
+	} elseif ( 'draft3' === $draft_type ) {
+		$content = get_post_meta( $book_id, 'agent_3_draft_content', true );
+	}
+	if ( ! is_string( $content ) || '' === $content ) {
+		$content = $post->post_content;
+	}
+
+	$categories = wp_get_post_terms( $book_id, 'book_category', array( 'fields' => 'slugs' ) );
+	$levels     = wp_get_post_terms( $book_id, 'book_level', array( 'fields' => 'slugs' ) );
+	$placements = wp_get_post_terms( $book_id, 'book_placement', array( 'fields' => 'slugs' ) );
+
+	$cover_id  = (int) get_post_thumbnail_id( $book_id );
+	$cover_url = $cover_id > 0 ? (string) wp_get_attachment_url( $cover_id ) : '';
+
+	return array(
+		'book_post_id'         => $book_id,
+		'book_name'            => $post->post_title,
+		'book_subtitle'        => (string) get_post_meta( $book_id, '_book_subtitle', true ),
+		'book_content'         => $content,
+		'book_cover_id'        => $cover_id,
+		'book_cover_url'       => $cover_url,
+		'placement_category'   => ! empty( $placements ) && ! is_wp_error( $placements ) ? array_values( $placements ) : array(),
+		'insert_link'          => (string) get_post_meta( $book_id, '_insert_link', true ),
+		'book_categories'      => ! empty( $categories ) && ! is_wp_error( $categories ) ? $categories[0] : '',
+		'book_levels'          => ! empty( $levels ) && ! is_wp_error( $levels ) ? $levels[0] : '',
+		'associated_author_id' => (int) get_post_meta( $book_id, '_book_author_id', true ),
+		'post_status'          => $post->post_status,
+	);
+}
+
+/**
+ * Ticked placement slugs from the submitted form (checkbox array or legacy single value).
+ *
+ * @return string[]
+ */
+function my_book_editor_get_placement_slugs_from_post() {
+	if ( ! isset( $_POST['placement_category'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing
+		return array();
+	}
+
+	$slugs = array();
+	foreach ( (array) wp_unslash( $_POST['placement_category'] ) as $value ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+		$slug = sanitize_title( (string) $value );
+		if ( '' !== $slug && term_exists( $slug, 'book_placement' ) ) {
+			$slugs[] = $slug;
+		}
+	}
+
+	return array_values( array_unique( $slugs ) );
+}
+
+/**
+ * Persist book meta, cover, taxonomies, and optional placement.
+ *
+ * @param int                 $post_id Post ID.
+ * @param array<string,mixed> $data    Sanitized form values.
+ */
+function my_book_editor_save_book_meta( $post_id, $data ) {
+	$post_id = (int) $post_id;
+
+	update_post_meta( $post_id, '_book_subtitle', $data['book_subtitle'] );
+	update_post_meta( $post_id, '_insert_link', $data['insert_link'] );
+	update_post_meta( $post_id, '_book_author_id', (int) $data['selected_author_id'] );
+
+	$book_cover_id = (int) $data['book_cover_id'];
+	if ( $book_cover_id > 0 ) {
+		set_post_thumbnail( $post_id, $book_cover_id );
+	}
+
+	if ( ! empty( $data['book_category_slug'] ) ) {
+		wp_set_object_terms( $post_id, $data['book_category_slug'], 'book_category' );
+	}
+
+	if ( ! empty( $data['book_level_slug'] ) ) {
+		wp_set_object_terms( $post_id, $data['book_level_slug'], 'book_level' );
+	}
+
+	if ( ! empty( $data['placement_category'] ) ) {
+		wp_set_object_terms( $post_id, $data['placement_category'], 'book_placement' );
+	}
+}
 
 /**
  * Handle form submission for Book Content Editor.
@@ -451,181 +569,171 @@ function my_book_editor_handle_submission() {
         exit;
     }
 
-    // Verify nonce
     if ( ! isset( $_POST['_wpnonce_book_content'] ) || ! wp_verify_nonce( $_POST['_wpnonce_book_content'], 'book_content_submission' ) ) {
         wp_die( 'Security check failed. Please refresh the page and try again.' );
     }
 
-    // Sanitize and retrieve form data
     $selected_book_id   = isset( $_POST['selected_book_id'] ) ? intval( $_POST['selected_book_id'] ) : 0;
-    $new_book_name      = sanitize_text_field( $_POST['new_book_name'] );
-    $book_subtitle      = sanitize_text_field( $_POST['book_subtitle'] );
-    $book_content       = wp_kses_post( $_POST['book_content'] );
+    $new_book_name      = isset( $_POST['new_book_name'] ) ? sanitize_text_field( wp_unslash( $_POST['new_book_name'] ) ) : '';
+    $book_subtitle      = isset( $_POST['book_subtitle'] ) ? sanitize_text_field( wp_unslash( $_POST['book_subtitle'] ) ) : '';
+    $book_content       = isset( $_POST['book_content'] ) ? wp_kses_post( wp_unslash( $_POST['book_content'] ) ) : '';
     $book_cover_id      = isset( $_POST['book_cover_id'] ) ? intval( $_POST['book_cover_id'] ) : 0;
-    $placement_category = isset( $_POST['placement_category'] ) ? sanitize_text_field( $_POST['placement_category'] ) : ''; // New: Placement Category
-    $insert_link        = isset( $_POST['insert_link'] ) ? esc_url_raw( $_POST['insert_link'] ) : '';
-
-    // Get selected taxonomy terms (slugs)
-    $book_category_slug = isset( $_POST['book_category'] ) ? sanitize_text_field( $_POST['book_category'] ) : '';
-    $book_level_slug    = isset( $_POST['book_level'] ) ? sanitize_text_field( $_POST['book_level'] ) : '';
+    $placement_category = my_book_editor_get_placement_slugs_from_post();
+    $insert_link        = isset( $_POST['insert_link'] ) ? esc_url_raw( wp_unslash( $_POST['insert_link'] ) ) : '';
+    $book_category_slug = isset( $_POST['book_category'] ) ? sanitize_text_field( wp_unslash( $_POST['book_category'] ) ) : '';
+    $book_level_slug    = isset( $_POST['book_level'] ) ? sanitize_text_field( wp_unslash( $_POST['book_level'] ) ) : '';
     $selected_author_id = isset( $_POST['selected_author_id'] ) ? intval( $_POST['selected_author_id'] ) : 0;
+    $submit_action      = isset( $_POST['submit_book_action'] ) ? sanitize_text_field( wp_unslash( $_POST['submit_book_action'] ) ) : 'draft';
+    $placement_action   = isset( $_POST['placement_action'] ) ? sanitize_text_field( wp_unslash( $_POST['placement_action'] ) ) : '';
 
-    $submit_action      = sanitize_text_field( $_POST['submit_book_action'] ); // Existing action for Save/Publish/etc.
-    $placement_action   = sanitize_text_field( $_POST['placement_action'] ); // New: Action for Placement Submit
+    $existing_post_id = isset( $_POST['book_post_id'] ) ? intval( $_POST['book_post_id'] ) : 0;
+    if ( $existing_post_id <= 0 && $selected_book_id > 0 ) {
+        $existing_post_id = $selected_book_id;
+    }
 
-    // Determine the book title to use for the post
     $post_title = '';
-    if ( ! empty( $new_book_name ) ) {
+    if ( '' !== $new_book_name ) {
         $post_title = $new_book_name;
-    } elseif ( $selected_book_id > 0 ) {
-        $existing_book = get_post( $selected_book_id );
+    } elseif ( $existing_post_id > 0 ) {
+        $existing_book = get_post( $existing_post_id );
         if ( $existing_book ) {
             $post_title = $existing_book->post_title;
         }
     }
 
-    $existing_post_id = isset( $_POST['book_post_id'] ) ? intval( $_POST['book_post_id'] ) : 0;
-
-    // Basic validation for new book or updating existing book if title changed
-    if ( empty( $post_title ) && empty($existing_post_id) ) {
+    if ( '' === $post_title && $existing_post_id <= 0 ) {
         wp_safe_redirect( add_query_arg( 'status', 'error_empty_title', wp_get_referer() ) );
         exit;
     }
 
-    // Determine post status based on button clicked
-    $post_status = 'pending';
-    $redirect_status = 'error';
+    $meta_payload = array(
+        'book_subtitle'      => $book_subtitle,
+        'book_cover_id'      => $book_cover_id,
+        'insert_link'        => $insert_link,
+        'selected_author_id' => $selected_author_id,
+        'book_category_slug' => $book_category_slug,
+        'book_level_slug'    => $book_level_slug,
+        'placement_category' => $placement_category,
+    );
 
-    if ( $submit_action === 'publish' ) {
-        if ( current_user_can( 'publish_book_profiles' ) || current_user_can( 'publish_posts' ) ) {
-            $post_status = 'publish';
-            $redirect_status = 'book_published';
-        } else {
-            $post_status = 'pending';
-            $redirect_status = 'book_pending_review';
-        }
-    } elseif ( $submit_action === 'save' ) {
-        $post_status = 'draft';
-        $redirect_status = 'book_saved_draft';
-    } elseif ( $submit_action === 'unpublish' ) {
-        $post_status = 'draft';
-        $redirect_status = 'book_unpublished';
-    } elseif ( $submit_action === 'archive' ) {
-        if ( get_post_status_object('archive') ) {
-             $post_status = 'archive';
-        } else {
-            $post_status = 'draft';
-        }
-        $redirect_status = 'book_archived';
-    } elseif ( $submit_action === 'delete' ) {
-        if ( $existing_post_id ) {
-            if ( current_user_can( 'delete_book_profiles' ) || current_user_can( 'delete_posts' ) ) {
-                if ( wp_delete_post( $existing_post_id, true ) ) {
-                    wp_safe_redirect( add_query_arg( 'status', 'book_deleted', wp_get_referer() ) );
-                    exit;
-                } else {
-                    error_log( 'Error deleting book post: ' . $existing_post_id );
-                    wp_safe_redirect( add_query_arg( 'status', 'error_book_delete', wp_get_referer() ) );
-                    exit;
-                }
-            } else {
-                wp_safe_redirect( add_query_arg( 'status', 'error_permissions', wp_get_referer() ) );
-                exit;
-            }
-        } else {
-            wp_safe_redirect( add_query_arg( 'status', 'error_no_content_to_delete', wp_get_referer() ) );
-            exit;
-        }
-    } elseif ( $placement_action === 'publish_placement' ) { // Handle new placement publish
-        // Ensure the post exists and the user has permission to publish
-        if ($existing_post_id > 0) {
-            if ( current_user_can( 'publish_book_profiles' ) || current_user_can( 'publish_posts' ) ) {
-                // Update post status to publish if not already
-                if (get_post_status($existing_post_id) !== 'publish') {
-                    wp_update_post(array(
-                        'ID'          => $existing_post_id,
-                        'post_status' => 'publish',
-                    ));
-                }
-                // Set the placement taxonomy
-                if (!empty($placement_category)) {
-                    wp_set_post_terms( $existing_post_id, $placement_category, 'book_placement' );
-                }
-                $redirect_status = 'book_published_to_placement';
-                $post_id = $existing_post_id;
-            } else {
-                wp_safe_redirect( add_query_arg( 'status', 'error_permissions', wp_get_referer() ) );
-                exit;
-            }
-        } else {
+    $redirect_status = 'error';
+    $post_status     = 'draft';
+    $skip_save       = false;
+    $result_id       = 0;
+
+    if ( 'publish_placement' === $placement_action ) {
+        if ( $existing_post_id <= 0 ) {
             wp_safe_redirect( add_query_arg( 'status', 'error_no_book_selected_for_placement', wp_get_referer() ) );
             exit;
         }
+        if ( empty( $placement_category ) ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_no_placement_selected', wp_get_referer() ) );
+            exit;
+        }
+        if ( ! current_user_can( 'publish_book_profiles' ) && ! current_user_can( 'publish_posts' ) ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_permissions', wp_get_referer() ) );
+            exit;
+        }
+
+        $result_id = wp_update_post(
+            array(
+                'ID'           => $existing_post_id,
+                'post_title'   => $post_title,
+                'post_content' => $book_content,
+                'post_status'  => 'publish',
+            ),
+            true
+        );
+
+        if ( is_wp_error( $result_id ) || ! $result_id ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_book_db', wp_get_referer() ) );
+            exit;
+        }
+
+        my_book_editor_save_book_meta( $existing_post_id, $meta_payload );
+        $redirect_status = 'book_published_to_placement';
+        $skip_save       = true;
+        $result_id       = $existing_post_id;
+    } elseif ( 'delete' === $submit_action ) {
+        if ( $existing_post_id <= 0 ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_no_content_to_delete', wp_get_referer() ) );
+            exit;
+        }
+        if ( ! current_user_can( 'delete_book_profiles' ) && ! current_user_can( 'delete_posts' ) ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_permissions', wp_get_referer() ) );
+            exit;
+        }
+        if ( wp_delete_post( $existing_post_id, true ) ) {
+            wp_safe_redirect( add_query_arg( 'status', 'book_deleted', wp_get_referer() ) );
+        } else {
+            wp_safe_redirect( add_query_arg( 'status', 'error_book_delete', wp_get_referer() ) );
+        }
+        exit;
+    } elseif ( function_exists( 'caast_workflow_resolve_submission' ) ) {
+        $resolved = caast_workflow_resolve_submission(
+            $submit_action,
+            'book',
+            array(
+                'can_publish' => current_user_can( 'publish_book_profiles' ) || current_user_can( 'publish_posts' ),
+            )
+        );
+        if ( $resolved && 'save' === $resolved['type'] ) {
+            $post_status     = $resolved['post_status'];
+            $redirect_status = $resolved['redirect_status'];
+        }
+    } elseif ( 'publish' === $submit_action ) {
+        if ( current_user_can( 'publish_book_profiles' ) || current_user_can( 'publish_posts' ) ) {
+            $post_status     = 'publish';
+            $redirect_status = 'book_published';
+        } else {
+            $post_status     = 'pending';
+            $redirect_status = 'book_pending_review';
+        }
+    } elseif ( 'save' === $submit_action ) {
+        $post_status     = 'draft';
+        $redirect_status = 'book_saved_draft';
+    } elseif ( 'unpublish' === $submit_action ) {
+        $post_status     = 'draft';
+        $redirect_status = 'book_unpublished';
+    } elseif ( 'archive' === $submit_action ) {
+        $post_status     = get_post_status_object( 'archive' ) ? 'archive' : 'draft';
+        $redirect_status = 'book_archived';
     }
 
+    if ( ! $skip_save ) {
+        if ( 'error' === $redirect_status ) {
+            $post_status     = 'draft';
+            $redirect_status = 'book_saved_draft';
+        }
 
-    // Prepare post data for save/update if not already handled by delete/placement publish
-    $post_data = array(
-        'post_title'    => $post_title,
-        'post_content'  => $book_content,
-        'post_status'   => $post_status,
-        'post_type'     => 'book_profile',
-        'post_author'   => get_current_user_id(),
-    );
+        $post_data = array(
+            'post_title'   => $post_title,
+            'post_content' => $book_content,
+            'post_status'  => $post_status,
+            'post_type'    => 'book_profile',
+            'post_author'  => get_current_user_id(),
+        );
 
-    $post_id = 0;
-    if ( $existing_post_id > 0 ) {
-        $post_data['ID'] = $existing_post_id;
-        $result = wp_update_post( $post_data, true );
-    } else {
-        $result = wp_insert_post( $post_data, true );
+        if ( $existing_post_id > 0 ) {
+            $post_data['ID'] = $existing_post_id;
+            $result_id       = wp_update_post( $post_data, true );
+        } else {
+            $result_id = wp_insert_post( $post_data, true );
+        }
+
+        if ( is_wp_error( $result_id ) || ! $result_id ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_book_db', wp_get_referer() ) );
+            exit;
+        }
+
+        my_book_editor_save_book_meta( $result_id, $meta_payload );
     }
 
-    if ( is_wp_error( $result ) ) {
-        error_log( 'Error creating/updating book post: ' . $result->get_error_message() );
-        wp_safe_redirect( add_query_arg( 'status', 'error_book_db', wp_get_referer() ) );
-    } elseif ( $result === 0 ) {
-        error_log( 'Failed to create/update book post, wp_insert_post/wp_update_post returned 0.' );
-        wp_safe_redirect( add_query_arg( 'status', 'error_book_db', wp_get_referer() ) );
-    } else {
-        // Save book subtitle as post meta
-        update_post_meta( $result, '_book_subtitle', $book_subtitle );
-
-        // Set featured image (Book Cover)
-        if ( ! empty( $book_cover_id ) ) {
-            set_post_thumbnail( $result, $book_cover_id );
-        } else {
-            delete_post_thumbnail( $result ); // Remove if ID is 0 or empty
-        }
-
-        // Save new insert_link as post meta (footer_position is now placement_category)
-        update_post_meta( $result, '_insert_link', $insert_link );
-        // Set the placement taxonomy directly
-        if ( ! empty( $placement_category ) ) {
-            wp_set_post_terms( $result, $placement_category, 'book_placement' );
-        } else {
-            wp_set_post_terms( $result, null, 'book_placement' ); // Clear if no placement selected
-        }
-
-
-        // Save selected Author ID as post meta for the book
-        update_post_meta( $result, '_book_author_id', $selected_author_id );
-
-        // Set taxonomies
-        if ( ! empty( $book_category_slug ) ) {
-            wp_set_post_terms( $result, $book_category_slug, 'book_category' );
-        } else {
-            wp_set_post_terms( $result, null, 'book_category' ); // Clear if no category selected
-        }
-
-        if ( ! empty( $book_level_slug ) ) {
-            wp_set_post_terms( $result, $book_level_slug, 'book_level' );
-        } else {
-            wp_set_post_terms( $result, null, 'book_level' ); // Clear if no level selected
-        }
-
-        wp_safe_redirect( add_query_arg( 'status', $redirect_status, wp_get_referer() ) );
+    $redirect_args = array( 'status' => $redirect_status );
+    if ( $result_id > 0 ) {
+        $redirect_args['book_id'] = $result_id;
     }
+    wp_safe_redirect( add_query_arg( $redirect_args, wp_get_referer() ) );
     exit;
 }
 }
@@ -647,72 +755,62 @@ function my_book_editor_get_book_content_ajax() {
     $book_id = isset( $_POST['book_id'] ) ? intval( $_POST['book_id'] ) : 0;
 
     if ( $book_id ) {
-        $args = array(
-            'p'              => $book_id,
-            'post_type'      => 'book_profile',
-            'post_status'    => array( 'publish', 'pending', 'draft', 'archive' ),
-            'posts_per_page' => 1,
-        );
-        $book_query = new WP_Query( $args );
+        $form_data = my_book_editor_get_post_form_data( $book_id );
 
-        if ( $book_query->have_posts() ) {
-            $book_post = $book_query->posts[0];
+        if ( $form_data ) {
+            wp_send_json_success(
+                array(
+                    'book_post_id'       => $form_data['book_post_id'],
+                    'book_name'          => esc_html( $form_data['book_name'] ),
+                    'book_subtitle'      => esc_html( $form_data['book_subtitle'] ),
+                    'book_content'       => $form_data['book_content'],
+                    'book_cover_id'      => $form_data['book_cover_id'],
+                    'book_cover_url'     => $form_data['book_cover_url'],
+                    'placement_category' => $form_data['placement_category'],
+                    'insert_link'        => esc_url( $form_data['insert_link'] ),
+                    'book_categories'    => $form_data['book_categories'],
+                    'book_levels'        => $form_data['book_levels'],
+                    'associated_author_id' => $form_data['associated_author_id'],
+                    'post_status'        => $form_data['post_status'],
+                )
+            );
+        }
 
-            $current_categories = wp_get_post_terms( $book_post->ID, 'book_category', array( 'fields' => 'slugs' ) );
-            $current_levels     = wp_get_post_terms( $book_post->ID, 'book_level', array( 'fields' => 'slugs' ) );
-            $current_placement  = wp_get_post_terms( $book_post->ID, 'book_placement', array( 'fields' => 'slugs' ) ); // New: Get placement
-
-            $associated_author_id = get_post_meta( $book_post->ID, '_book_author_id', true );
-
-            // Ensure book cover URL is fetched correctly
-            $book_cover_id = get_post_thumbnail_id( $book_post->ID );
-            $book_cover_url = $book_cover_id ? wp_get_attachment_url( $book_cover_id ) : '';
-
-
-            wp_send_json_success( array(
-                'book_post_id'    => $book_post->ID,
-                'book_name'       => esc_html( $book_post->post_title ),
-                'book_subtitle'   => esc_html( get_post_meta( $book_post->ID, '_book_subtitle', true ) ),
-                'book_content'    => $book_post->post_content,
-                'book_cover_id'   => $book_cover_id,
-                'book_cover_url'  => $book_cover_url,
-                'placement_category' => !empty($current_placement) ? $current_placement[0] : '', // New: Send placement
-                'insert_link'     => esc_url( get_post_meta( $book_post->ID, '_insert_link', true ) ),
-                'book_categories' => !empty($current_categories) ? $current_categories[0] : '',
-                'book_levels'     => !empty($current_levels) ? $current_levels[0] : '',
-                'associated_author_id' => intval($associated_author_id),
-            ) );
-        } else {
-            wp_send_json_success( array(
+        wp_send_json_success(
+            array(
                 'book_post_id'    => 0,
                 'book_name'       => '',
                 'book_subtitle'   => '',
                 'book_content'    => '',
                 'book_cover_id'   => 0,
                 'book_cover_url'  => '',
-                'placement_category' => '', // New: Clear placement
+                'placement_category' => array(),
                 'insert_link'     => '',
                 'book_categories' => '',
                 'book_levels'     => '',
                 'associated_author_id' => 0,
+                'post_status'     => 'draft',
                 'message'         => 'No existing content found for this book. You can create a new one.',
-            ) );
-        }
+            )
+        );
     } else {
-        wp_send_json_success( array(
-            'book_post_id'    => 0,
-            'book_name'       => '',
-            'book_subtitle'   => '',
-            'book_content'    => '',
-            'book_cover_id'   => 0,
-            'book_cover_url'  => '',
-            'placement_category' => '', // New: Clear placement
-            'insert_link'     => '',
-            'book_categories' => '',
-            'book_levels'     => '',
-            'associated_author_id' => 0,
-            'message'         => __( 'Invalid book ID, or no book selected.', 'my-book-editor' )
-        ) );
+        wp_send_json_success(
+            array(
+                'book_post_id'    => 0,
+                'book_name'       => '',
+                'book_subtitle'   => '',
+                'book_content'    => '',
+                'book_cover_id'   => 0,
+                'book_cover_url'  => '',
+                'placement_category' => array(),
+                'insert_link'     => '',
+                'book_categories' => '',
+                'book_levels'     => '',
+                'associated_author_id' => 0,
+                'post_status'     => 'draft',
+                'message'         => __( 'Invalid book ID, or no book selected.', 'my-book-editor' ),
+            )
+        );
     }
 }
 }
@@ -791,7 +889,7 @@ function my_book_editor_full_automation_callback() {
     // Book editor always sends this task type to n8n (not user-selectable).
     $task_type = 'book_introduction';
 
-    $allowed_diff = array( 'regular', 'preparatory' );
+    $allowed_diff = array( 'regular', 'honors', 'preparatory' );
     if ( is_array( $parsed ) && isset( $parsed['difficulty_level'] ) ) {
         $difficulty_level = sanitize_text_field( $parsed['difficulty_level'] );
     } else {
@@ -799,6 +897,12 @@ function my_book_editor_full_automation_callback() {
     }
     if ( ! in_array( $difficulty_level, $allowed_diff, true ) ) {
         $difficulty_level = 'regular';
+    }
+
+    $allowed_grade = array( 'elementary_school', 'middle_school', 'high_school', 'college' );
+    $grade_level   = isset( $parsed['grade_level'] ) ? sanitize_text_field( $parsed['grade_level'] ) : ( isset( $_POST['grade_level'] ) ? sanitize_text_field( wp_unslash( $_POST['grade_level'] ) ) : 'middle_school' );
+    if ( ! in_array( $grade_level, $allowed_grade, true ) ) {
+        $grade_level = 'middle_school';
     }
 
     $author_name = '' !== $author_in ? $author_in : 'N/A';
@@ -813,6 +917,7 @@ function my_book_editor_full_automation_callback() {
         'model'               => $selected_model,
         'task_type'           => $task_type,
         'difficulty_level'    => $difficulty_level,
+        'grade_level'         => $grade_level,
         'selected_tasks'      => $selected_tasks_resolved,
         'book_introduction'   => true,
         'memory_id'           => my_book_editor_get_memory_id(),
@@ -847,60 +952,153 @@ function my_book_editor_full_automation_callback() {
         wp_send_json_error( 'n8n webhook returned HTTP ' . (int) $http_code . ' — ' . $body );
     }
 
-    $n8n_response_data = json_decode( $body, true );
-    if ( JSON_ERROR_NONE !== json_last_error() ) {
+    if ( function_exists( 'my_lesson_editor_normalize_n8n_body' ) ) {
+        list( $n8n_response_data, $raw_body ) = my_lesson_editor_normalize_n8n_body( $body );
+    } else {
+        $n8n_response_data = json_decode( $body, true );
+        $raw_body          = $body;
+    }
+
+    $book_fallback = $book_name;
+
+    if ( ! is_array( $n8n_response_data ) ) {
+        $plain = $raw_body !== '' ? $raw_body : $body;
         wp_send_json_success(
             array(
-                'message'      => 'Automation payload sent to n8n; response is not JSON.',
-                'n8n_response' => $body,
-                'http_code'    => $http_code,
+                'message'       => __( 'Automation finished.', 'my-book-editor' ),
+                'n8n_response'    => $plain,
+                'http_code'       => $http_code,
+                'final_title'     => $book_fallback,
+                'final_content'   => $plain,
             )
         );
     }
 
-    if ( isset( $n8n_response_data['data'] ) && is_array( $n8n_response_data['data'] ) ) {
-        $n8n_response_data = $n8n_response_data['data'];
+    if ( function_exists( 'my_lesson_editor_extract_automation_output' ) ) {
+        list( $final_title, $final_content ) = my_lesson_editor_extract_automation_output( $n8n_response_data );
+    } else {
+        $final_title   = isset( $n8n_response_data['final_title'] ) ? (string) $n8n_response_data['final_title'] : '';
+        $final_content = isset( $n8n_response_data['final_content'] ) ? (string) $n8n_response_data['final_content'] : '';
+    }
+
+    if ( $final_title === '' ) {
+        $final_title = $book_fallback;
+    }
+    if ( $final_content === '' ) {
+        $final_content = wp_json_encode( $n8n_response_data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE );
     }
 
     wp_send_json_success(
         array(
-            'message'      => __( 'Automation payload sent to n8n successfully.', 'my-book-editor' ),
-            'n8n_response' => $n8n_response_data,
-            'http_code'    => $http_code,
+            'message'       => __( 'Automation finished.', 'my-book-editor' ),
+            'n8n_response'  => $n8n_response_data,
+            'http_code'     => $http_code,
+            'final_title'   => $final_title,
+            'final_content' => $final_content,
         )
     );
 }
+}
+
+/**
+ * Query book_profile posts for the Generated Drafts dropdown.
+ *
+ * @return WP_Post[]
+ */
+function my_book_editor_query_draft_list_posts() {
+    $statuses = function_exists( 'caast_workflow_get_editor_query_statuses' )
+        ? caast_workflow_get_editor_query_statuses()
+        : array( 'publish', 'draft', 'pending', 'archive' );
+
+    $query_args = array(
+        'post_type'              => 'book_profile',
+        'posts_per_page'         => -1,
+        'post_status'            => $statuses,
+        'orderby'                => 'modified',
+        'order'                  => 'DESC',
+        'suppress_filters'       => true,
+        'no_found_rows'          => true,
+        'update_post_meta_cache' => false,
+        'update_post_term_cache' => false,
+    );
+
+    if ( ! current_user_can( 'edit_others_posts' ) ) {
+        $query_args['author'] = get_current_user_id();
+    }
+
+    return get_posts( $query_args );
 }
 
 // AJAX handler for saving final generated content as a new draft (for book editor)
 add_action( 'wp_ajax_my_book_editor_save_final_content_as_draft', 'my_book_editor_save_final_content_as_draft_callback' );
 if ( ! function_exists( 'my_book_editor_save_final_content_as_draft_callback' ) ) {
 function my_book_editor_save_final_content_as_draft_callback() {
-    if ( ! isset( $_POST['nonce'] ) || ! wp_verify_nonce( $_POST['nonce'], 'book_editor_nonce' ) ) { // Using book_editor_nonce now
+    if ( ! isset( $_POST['nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['nonce'] ) ), 'book_editor_nonce' ) ) {
         wp_send_json_error( 'Nonce verification failed. Please try reloading the page.' );
     }
 
-    $title = sanitize_text_field( $_POST['title'] );
-    $content = wp_kses_post( $_POST['content'] );
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+        wp_send_json_error( 'You do not have permission to save drafts.' );
+    }
+
+    $title   = isset( $_POST['title'] ) ? sanitize_text_field( wp_unslash( $_POST['title'] ) ) : '';
+    $content = isset( $_POST['content'] ) ? wp_kses_post( wp_unslash( $_POST['content'] ) ) : '';
 
     if ( empty( $title ) || empty( $content ) ) {
         wp_send_json_error( 'Title and content cannot be empty.' );
     }
 
     $new_post_data = array(
-        'post_title'    => $title,
-        'post_content'  => $content,
-        'post_status'   => 'draft',
-        'post_type'     => 'book_profile',
+        'post_title'   => $title,
+        'post_content' => $content,
+        'post_status'  => 'draft',
+        'post_type'    => 'book_profile',
+        'post_author'  => get_current_user_id(),
     );
 
     $new_post_id = wp_insert_post( $new_post_data, true );
 
     if ( is_wp_error( $new_post_id ) ) {
         wp_send_json_error( $new_post_id->get_error_message() );
-    } else {
-        wp_send_json_success( array( 'message' => 'New draft created successfully!', 'post_id' => $new_post_id ) );
     }
+
+    update_post_meta( $new_post_id, '_mbe_ai_generated_draft', '1' );
+
+    wp_send_json_success(
+        array(
+            'message'     => __( 'New draft created successfully!', 'my-book-editor' ),
+            'post_id'     => $new_post_id,
+            'post_title'  => $title,
+            'post_status' => 'draft',
+        )
+    );
+}
+}
+
+// AJAX: list book_profile drafts for Generated Drafts dropdown.
+add_action( 'wp_ajax_my_book_editor_get_draft_titles', 'my_book_editor_get_draft_titles_callback' );
+if ( ! function_exists( 'my_book_editor_get_draft_titles_callback' ) ) {
+function my_book_editor_get_draft_titles_callback() {
+    if ( ! isset( $_POST['nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['nonce'] ) ), 'book_editor_nonce' ) ) {
+        wp_send_json_error( 'Nonce verification failed.' );
+    }
+
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+        wp_send_json_error( 'Permission denied.' );
+    }
+
+    $posts  = my_book_editor_query_draft_list_posts();
+    $titles = array();
+    foreach ( $posts as $post ) {
+        $titles[] = array(
+            'id'     => $post->ID,
+            'title'  => $post->post_title,
+            'status' => $post->post_status,
+            'is_ai'  => (bool) get_post_meta( $post->ID, '_mbe_ai_generated_draft', true ),
+        );
+    }
+
+    wp_send_json_success( array( 'drafts' => $titles ) );
 }
 }
 
@@ -912,33 +1110,35 @@ function my_book_editor_load_draft_content_callback() {
         wp_send_json_error( 'Nonce verification failed. Please try reloading the page.' );
     }
 
-    $post_id = intval( $_POST['post_id'] );
-    $draft_type = sanitize_text_field( $_POST['draft_type'] );
+    $post_id    = isset( $_POST['post_id'] ) ? intval( $_POST['post_id'] ) : 0;
+    $draft_type = isset( $_POST['draft_type'] ) ? sanitize_text_field( wp_unslash( $_POST['draft_type'] ) ) : 'main';
 
-    $post = get_post( $post_id );
+    $form_data = my_book_editor_get_post_form_data( $post_id, $draft_type );
 
-    if ( !$post || $post->post_type !== 'book_profile' ) {
+    if ( ! $form_data ) {
         wp_send_json_error( 'Invalid post ID or post type.' );
     }
 
-    $content_to_return = '';
-    $title_to_return = $post->post_title;
-
-    // Example: If you stored draft content in custom fields like 'agent_1_draft_content'
-    if ($draft_type === 'draft1') {
-        $content_to_return = get_post_meta($post_id, 'agent_1_draft_content', true);
-    } elseif ($draft_type === 'draft2') {
-        $content_to_return = get_post_meta($post_id, 'agent_2_draft_content', true);
-    } elseif ($draft_type === 'draft3') {
-        $content_to_return = get_post_meta($post_id, 'agent_3_draft_content', true);
-    } else {
-        $content_to_return = $post->post_content; // Fallback to main content
-    }
-
-    wp_send_json_success( array(
-        'title' => $title_to_return,
-        'content' => apply_filters( 'the_content', $content_to_return ),
-    ));
+    wp_send_json_success(
+        array(
+            'title'                => $form_data['book_name'],
+            'content'              => apply_filters( 'the_content', $form_data['book_content'] ),
+            'post_content'         => $form_data['book_content'],
+            'post_id'              => $form_data['book_post_id'],
+            'post_status'          => $form_data['post_status'],
+            'book_post_id'         => $form_data['book_post_id'],
+            'book_name'            => $form_data['book_name'],
+            'book_subtitle'        => $form_data['book_subtitle'],
+            'book_content'         => $form_data['book_content'],
+            'book_cover_id'        => $form_data['book_cover_id'],
+            'book_cover_url'       => $form_data['book_cover_url'],
+            'placement_category'   => $form_data['placement_category'],
+            'insert_link'          => $form_data['insert_link'],
+            'book_categories'      => $form_data['book_categories'],
+            'book_levels'          => $form_data['book_levels'],
+            'associated_author_id' => $form_data['associated_author_id'],
+        )
+    );
 }
 }
 
@@ -958,6 +1158,8 @@ function my_book_editor_shortcode() {
         <?php
         return ob_get_clean();
     }
+
+    my_book_editor_enqueue_frontend_assets();
 
     // Initialize values for form fields - These will be populated by JS on load/selection
     $book_name_val      = '';
@@ -984,9 +1186,12 @@ function my_book_editor_shortcode() {
             case 'book_saved_draft':
                 $status_message = 'Book saved as draft!'; break;
             case 'book_pending_review':
-                $status_message = 'Book submitted for review!'; break;
+            case 'book_ready_for_approval':
+                $status_message = 'Book marked as Ready for Approval.'; break;
+            case 'book_approved':
+                $status_message = 'Book marked as Approved.'; break;
             case 'book_unpublished':
-                $status_message = 'Book successfully unpublished (set to draft)!'; break;
+                $status_message = 'Book unpublished.'; break;
             case 'book_archived':
                 $status_message = 'Book successfully archived!'; break;
             case 'book_deleted':
@@ -1010,8 +1215,11 @@ function my_book_editor_shortcode() {
             case 'error_permissions':
                 $status_message = 'You do not have sufficient permissions to perform this action.';
                 $status_class = 'bg-red-100 border border-red-400 text-red-700'; break;
-            case 'error_no_book_selected_for_placement': // New error status
+            case 'error_no_book_selected_for_placement':
                 $status_message = 'Please select a book before attempting to publish to a placement.';
+                $status_class = 'bg-red-100 border border-red-400 text-red-700'; break;
+            case 'error_no_placement_selected':
+                $status_message = 'Please select a placement category before publishing to placement.';
                 $status_class = 'bg-red-100 border border-red-400 text-red-700'; break;
             default:
                 $status_message = 'An unknown status occurred.';
@@ -1204,7 +1412,32 @@ function my_book_editor_shortcode() {
                     <input type="hidden" name="action" value="my_book_editor_submit">
                     <?php wp_nonce_field('book_content_submission', '_wpnonce_book_content'); ?>
                     <input type="hidden" name="book_post_id" id="book_post_id" value="<?php echo esc_attr( $book_post_id_val ); ?>">
-                    <input type="hidden" name="selected_author_id" id="selected_author_id" value="0">
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 items-end mb-3">
+                        <div class="md:col-span-2">
+                            <label for="selected_author_id" class="block text-sm font-medium text-gray-700"><?php esc_html_e( 'Select an author', 'my-book-editor' ); ?></label>
+                            <select name="selected_author_id" id="selected_author_id" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                                <option value=""><?php esc_html_e( '-- Select an author --', 'my-book-editor' ); ?></option>
+                                <?php
+                                $authors = get_posts(
+                                    array(
+                                        'post_type'      => 'author_profile',
+                                        'posts_per_page' => -1,
+                                        'orderby'        => 'title',
+                                        'order'          => 'ASC',
+                                        'post_status'    => function_exists( 'caast_workflow_get_editor_query_statuses' )
+                                            ? caast_workflow_get_editor_query_statuses()
+                                            : array( 'publish', 'draft', 'pending', 'archive' ),
+                                    )
+                                );
+                                foreach ( $authors as $author ) {
+                                    $selected = selected( $associated_author_id_val, $author->ID, false );
+                                    echo '<option value="' . esc_attr( $author->ID ) . '" ' . $selected . '>' . esc_html( $author->post_title ) . '</option>';
+                                }
+                                ?>
+                            </select>
+                        </div>
+                    </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-2 items-end mb-3">
                         <div class="md:col-span-2">
@@ -1217,7 +1450,9 @@ function my_book_editor_shortcode() {
                                     'posts_per_page' => -1,
                                     'orderby'        => 'title',
                                     'order'          => 'ASC',
-                                    'post_status'    => array('publish', 'draft', 'pending', 'archive'),
+                                    'post_status'    => function_exists( 'caast_workflow_get_editor_query_statuses' )
+                                        ? caast_workflow_get_editor_query_statuses()
+                                        : array( 'publish', 'draft', 'pending', 'archive' ),
                                 ) );
                                 foreach ( $books as $book ) {
                                     echo '<option value="' . esc_attr( $book->ID ) . '">' . esc_html( $book->post_title ) . '</option>';
@@ -1233,6 +1468,32 @@ function my_book_editor_shortcode() {
                     <div class="flex flex-col mb-3">
                         <label for="new_book_name" class="block text-sm font-medium text-gray-700">Add a book</label>
                         <input type="text" name="new_book_name" id="new_book_name" placeholder="Enter book name" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" value="<?php echo esc_attr($book_name_val); ?>" />
+                    </div>
+
+                    <!-- Source & action block: Upload | Edit | Submit -->
+                    <div class="border border-gray-200 rounded-none p-3 mb-4 bg-gray-50" data-mle-uploader="book">
+                        <div class="flex flex-col mb-3 w-full">
+                            <label for="mbe_source_book_name" class="block text-sm font-medium text-gray-700"><?php esc_html_e( 'Book Name (Source)', 'my-book-editor' ); ?></label>
+                            <input type="text" id="mbe_source_book_name" name="mbe_source_book_name" placeholder="<?php esc_attr_e( 'Mirrors AI book name or upload filename', 'my-book-editor' ); ?>" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" />
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-2 mb-2 w-full">
+                            <button type="button" data-mle-action="upload" class="button button-secondary bg-white text-gray-800 border border-gray-300 px-4 py-2 rounded-none hover:bg-gray-100 w-full inline-flex items-center justify-center gap-2">
+                                <span class="mle-btn-label"><?php esc_html_e( 'Upload', 'my-book-editor' ); ?></span>
+                                <span class="mle-btn-spinner hidden inline-block w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" aria-hidden="true"></span>
+                            </button>
+                            <button type="button" data-mle-action="edit" class="button button-secondary bg-white text-gray-800 border border-gray-300 px-4 py-2 rounded-none hover:bg-gray-100 w-full inline-flex items-center justify-center gap-2">
+                                <span class="mle-btn-label"><?php esc_html_e( 'Edit', 'my-book-editor' ); ?></span>
+                                <span class="mle-btn-spinner hidden inline-block w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" aria-hidden="true"></span>
+                            </button>
+                            <button type="button" data-mle-action="submit" class="button button-primary bg-blue-600 text-white px-4 py-2 rounded-none hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 w-full inline-flex items-center justify-center gap-2">
+                                <span class="mle-btn-label"><?php esc_html_e( 'Submit', 'my-book-editor' ); ?></span>
+                                <span class="mle-btn-spinner hidden inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true"></span>
+                            </button>
+                        </div>
+
+                        <input type="file" data-mle-file="hidden" class="hidden" accept=".pdf,.txt,.md,.csv,.doc,.docx" />
+                        <p data-mle-status class="text-xs text-gray-600 mt-2 min-h-[1rem]" role="status" aria-live="polite"></p>
                     </div>
 
                     <div class="flex flex-col mb-3">
@@ -1318,11 +1579,20 @@ function my_book_editor_shortcode() {
                         <div class="md:col-span-2 flex flex-col">
                             <label for="submit_book_action_select" class="block text-sm font-medium text-gray-700">Action</label>
                             <select name="submit_book_action" id="submit_book_action_select" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
-                                <option value="save">Save Draft</option>
-                                <option value="publish">Publish Ready</option>
-                                <option value="unpublish">Unpublish</option>
-                                <option value="archive">Archive</option>
-                                <option value="delete">Delete</option>
+                                <?php
+                                $book_current_status = ! empty( $book_post_id_val ) ? get_post_status( $book_post_id_val ) : 'draft';
+                                if ( function_exists( 'caast_workflow_render_action_options' ) ) {
+                                    caast_workflow_render_action_options( $book_current_status );
+                                } else {
+                                    ?>
+                                    <option value="save">Save Draft</option>
+                                    <option value="publish">Publish Ready</option>
+                                    <option value="unpublish">Unpublish</option>
+                                    <option value="archive">Archive</option>
+                                    <option value="delete">Delete</option>
+                                    <?php
+                                }
+                                ?>
                             </select>
                         </div>
                         <div class="flex items-end">
@@ -1332,20 +1602,21 @@ function my_book_editor_shortcode() {
 
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-2 mb-4">
                         <div class="flex flex-col md:col-span-2">
-                            <label for="placement_category" class="block text-sm font-medium text-gray-700">Placement Category</label>
-                            <select name="placement_category" id="placement_category" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
-                                <option value="">-- Select Placement --</option>
+                            <label class="block text-sm font-medium text-gray-700">Placement Category</label>
+                            <div id="placement_category" class="caast-placement-checkboxes mt-1 space-y-1">
                                 <?php
                                 $placements = get_terms( array(
                                     'taxonomy'   => 'book_placement',
                                     'hide_empty' => false,
                                 ) );
-                                foreach ( $placements as $placement ) {
-                                    $selected = ( $placement_category_val === $placement->slug ) ? 'selected' : '';
-                                    echo '<option value="' . esc_attr( $placement->slug ) . '" ' . $selected . '>' . esc_html( $placement->name ) . '</option>';
+                                if ( ! is_wp_error( $placements ) ) {
+                                    foreach ( $placements as $placement ) {
+                                        echo '<label class="caast-checkbox-row flex items-center gap-2 text-sm"><input type="checkbox" class="caast-placement-checkbox" name="placement_category[]" value="' . esc_attr( $placement->slug ) . '"> <span>' . esc_html( $placement->name ) . '</span></label>';
+                                    }
                                 }
                                 ?>
-                            </select>
+                            </div>
+                            <p class="text-xs text-gray-500 mt-1">Tick one or more placements to publish this book to multiple sections at the same time.</p>
                         </div>
                         <!--<div class="flex flex-col">-->
                         <!--    <label for="insert_link" class="block text-sm font-medium text-gray-700">Insert Link</label>-->
@@ -1425,17 +1696,21 @@ function my_book_editor_shortcode() {
                     <p class="text-gray-500 text-xs mt-1"><?php esc_html_e( 'Active model:', 'my-book-editor' ); ?> <span id="active-model-label" class="font-semibold text-gray-800"><?php esc_html_e( 'DeepSeek-R1', 'my-book-editor' ); ?></span></p>
                 </div>
                 <div class="mb-4">
-                    <label class="block text-gray-700 text-sm font-bold mb-2"><?php esc_html_e( 'Difficulty level', 'my-book-editor' ); ?></label>
-                    <div class="inline-flex w-full rounded-none border border-gray-300 bg-gray-100 p-1 shadow-inner" role="radiogroup" aria-label="Difficulty level">
-                        <label class="flex-1 cursor-pointer text-center min-w-0">
-                            <input type="radio" name="difficulty_level" value="regular" class="peer sr-only" checked>
-                            <span class="block rounded-none px-3 py-2 text-sm font-medium text-gray-600 transition-all duration-200 peer-checked:bg-white peer-checked:text-gray-900 peer-checked:shadow"><?php esc_html_e( 'Regular', 'my-book-editor' ); ?></span>
-                        </label>
-                        <label class="flex-1 cursor-pointer text-center min-w-0">
-                            <input type="radio" name="difficulty_level" value="preparatory" class="peer sr-only">
-                            <span class="block rounded-none px-3 py-2 text-sm font-medium text-gray-600 transition-all duration-200 peer-checked:bg-white peer-checked:text-gray-900 peer-checked:shadow"><?php esc_html_e( 'Preparatory', 'my-book-editor' ); ?></span>
-                        </label>
-                    </div>
+                    <label for="grade_level" class="caast-label"><?php esc_html_e( 'Grade level', 'my-book-editor' ); ?></label>
+                    <select id="grade_level" name="grade_level" class="caast-select form-input">
+                        <option value="elementary_school"><?php esc_html_e( 'Elementary School', 'my-book-editor' ); ?></option>
+                        <option value="middle_school" selected><?php esc_html_e( 'Middle School', 'my-book-editor' ); ?></option>
+                        <option value="high_school"><?php esc_html_e( 'High School', 'my-book-editor' ); ?></option>
+                        <option value="college"><?php esc_html_e( 'College', 'my-book-editor' ); ?></option>
+                    </select>
+                </div>
+                <div class="mb-4">
+                    <label for="difficulty_level_select" class="caast-label"><?php esc_html_e( 'Difficulty level', 'my-book-editor' ); ?></label>
+                    <select id="difficulty_level_select" name="difficulty_level" class="caast-select form-input">
+                        <option value="regular" selected><?php esc_html_e( 'Regular', 'my-book-editor' ); ?></option>
+                        <option value="honors"><?php esc_html_e( 'Honors', 'my-book-editor' ); ?></option>
+                        <option value="preparatory"><?php esc_html_e( 'Preparatory', 'my-book-editor' ); ?></option>
+                    </select>
                 </div>
                 <button type="button" id="start_full_automation" class="generate-btn mbe-generate-btn button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full"><span class="mbe-btn-spinner" aria-hidden="true"></span><span class="mbe-generate-btn-label"><?php esc_html_e( 'Generate', 'my-book-editor' ); ?></span></button>
                 <input type="checkbox" id="task_book_introduction" class="sr-only" checked="checked" aria-hidden="true" tabindex="-1" data-task-id="book_introduction">
@@ -1468,37 +1743,34 @@ function my_book_editor_shortcode() {
             <h2 class="text-xl font-semibold text-gray-800 mb-4 mt-6"><?php esc_html_e( 'Generated Drafts Content', 'my-book-editor' ); ?></h2>
             <div class="flex flex-col md:flex-row gap-4">
                 <div class="flex-1">
-                    <label for="select_title_ce" class="block text-gray-700 text-sm font-bold mb-2">
+                    <label for="mbe_select_title_ce" class="block text-gray-700 text-sm font-bold mb-2">
                         <?php esc_html_e( 'Select Title:', 'my-book-editor' ); ?>
                     </label>
-                    <select id="select_title_ce" class="w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    <select id="mbe_select_title_ce" class="w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
                         <option value="">-- Select Title --</option>
                         <?php
-                        // Populate with existing book_profile posts (drafts and published)
-                        $args = array(
-                            'post_type'      => 'book_profile',
-                            'posts_per_page' => -1,
-                            'post_status'    => array( 'publish', 'draft' ),
-                            'orderby'        => 'title',
-                            'order'          => 'ASC',
-                        );
-                        $book_posts = new WP_Query( $args );
-                        if ( $book_posts->have_posts() ) {
-                            while ( $book_posts->have_posts() ) {
-                                $book_posts->the_post();
-                                echo '<option value="' . esc_attr( get_the_ID() ) . '">' . esc_html( get_the_title() ) . ' (' . esc_html(get_post_status()) . ')</option>';
-                            }
-                            wp_reset_postdata();
+                        // Initial options; JS refreshes via my_book_editor_get_draft_titles on load.
+                        foreach ( my_book_editor_query_draft_list_posts() as $book_post ) {
+                            $status_label = function_exists( 'caast_workflow_format_draft_list_status' )
+                                ? caast_workflow_format_draft_list_status( $book_post->post_status )
+                                : $book_post->post_status;
+                            printf(
+                                '<option value="%1$d">%2$s (%3$s)</option>',
+                                (int) $book_post->ID,
+                                esc_html( $book_post->post_title ),
+                                esc_html( $status_label )
+                            );
                         }
                         ?>
                     </select>
                 </div>
-                <div class="flex-1 hidden" id="draft_selection_container">
-                    <label for="select_draft_ce" class="block text-gray-700 text-xs sm:text-sm font-bold mb-2">
+                <div class="flex-1 hidden" id="mbe_draft_selection_container">
+                    <label for="mbe_select_draft_ce" class="block text-gray-700 text-xs sm:text-sm font-bold mb-2">
                         Select Draft:
                     </label>
-                    <select id="select_draft_ce" class="w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    <select id="mbe_select_draft_ce" class="w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
                         <option value="">-- Select Draft --</option>
+                        <option value="main"><?php esc_html_e( 'Main book body', 'my-book-editor' ); ?></option>
                         <option value="draft1">Draft 1 (Agent 1)</option>
                         <option value="draft2">Draft 2 (Agent 2)</option>
                         <option value="draft3">Draft 3 (Agent 3)</option>
@@ -1519,19 +1791,109 @@ if ( ! shortcode_exists( 'my_book_editor' ) ) {
     add_shortcode( 'my_book_editor', 'my_book_editor_shortcode' );
 }
 
-// Add rewrite rules
-if ( ! function_exists( 'my_book_editor_rewrite_rule' ) ) {
-function my_book_editor_rewrite_rule() {
-    add_rewrite_rule(
-        '^book-profile/([0-9]+)/?$',
-        'index.php?post_type=book_profile&p=$matches[1]',
-        'top'
+/**
+ * AJAX: extract text from an uploaded desktop file (delegates to MLE_AcademyLM_Client).
+ */
+add_action( 'wp_ajax_mbe_extract_text_from_upload', 'mbe_ajax_extract_text_from_upload_callback' );
+function mbe_ajax_extract_text_from_upload_callback() {
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+        wp_send_json_error( array( 'message' => __( 'Permission denied.', 'my-book-editor' ) ), 403 );
+    }
+    check_ajax_referer( 'book_editor_nonce', 'nonce' );
+
+    if ( empty( $_FILES['upload_file']['tmp_name'] ) || ! is_uploaded_file( $_FILES['upload_file']['tmp_name'] ) ) {
+        wp_send_json_error( array( 'message' => __( 'No file uploaded.', 'my-book-editor' ) ) );
+    }
+    $size = isset( $_FILES['upload_file']['size'] ) ? (int) $_FILES['upload_file']['size'] : 0;
+    if ( $size <= 0 || $size > 8 * 1024 * 1024 ) {
+        wp_send_json_error( array( 'message' => __( 'File must be greater than 0 and less than 8 MB.', 'my-book-editor' ) ) );
+    }
+    $name = sanitize_file_name( wp_unslash( $_FILES['upload_file']['name'] ) );
+
+    if ( ! class_exists( 'MLE_AcademyLM_Client' ) ) {
+        wp_send_json_error( array( 'message' => __( 'Shared upload module is missing. Activate "My Lesson Editor" plugin.', 'my-book-editor' ) ) );
+    }
+    $client = new MLE_AcademyLM_Client();
+    $text   = $client->extract_text( $_FILES['upload_file']['tmp_name'], $name );
+    if ( is_wp_error( $text ) ) {
+        wp_send_json_error( array( 'message' => $text->get_error_message() ) );
+    }
+
+    wp_send_json_success(
+        array(
+            'filename' => $name,
+            'size'     => $size,
+            'text'     => (string) $text,
+            'html'     => wpautop( esc_html( wp_check_invalid_utf8( (string) $text, true ) ) ),
+        )
     );
 }
-}
-add_action( 'init', 'my_book_editor_rewrite_rule' );
 
-// Flush rewrite rules on plugin activation
+/**
+ * AJAX: submit current main editor content to local WordPress as a book_profile.
+ *
+ * Updates the existing book post when a "book_post_id" is supplied, otherwise
+ * creates a new draft.
+ */
+add_action( 'wp_ajax_mbe_submit_book_to_wp', 'mbe_ajax_submit_book_to_wp_callback' );
+function mbe_ajax_submit_book_to_wp_callback() {
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+        wp_send_json_error( array( 'message' => __( 'Permission denied.', 'my-book-editor' ) ), 403 );
+    }
+    check_ajax_referer( 'book_editor_nonce', 'nonce' );
+
+    $title    = isset( $_POST['title'] ) ? sanitize_text_field( wp_unslash( $_POST['title'] ) ) : '';
+    $content  = isset( $_POST['content'] ) ? wp_kses_post( wp_unslash( $_POST['content'] ) ) : '';
+    $book_id  = isset( $_POST['book_post_id'] ) ? absint( $_POST['book_post_id'] ) : 0;
+    $subtitle = isset( $_POST['subtitle'] ) ? sanitize_text_field( wp_unslash( $_POST['subtitle'] ) ) : '';
+
+    if ( $title === '' || $content === '' ) {
+        wp_send_json_error( array( 'message' => __( 'Title and content are required.', 'my-book-editor' ) ) );
+    }
+
+    $force_new = ! empty( $_POST['force_new_draft'] ) && '1' === sanitize_text_field( wp_unslash( $_POST['force_new_draft'] ) );
+
+    $post_data = array(
+        'post_title'   => $title,
+        'post_content' => $content,
+        'post_type'    => 'book_profile',
+        'post_status'  => 'draft',
+    );
+
+    if ( ! $force_new && $book_id > 0 && get_post_type( $book_id ) === 'book_profile' ) {
+        $existing = get_post( $book_id );
+        if ( $existing ) {
+            $post_data['post_status'] = $existing->post_status;
+        }
+        $post_data['ID'] = $book_id;
+        $result          = wp_update_post( $post_data, true );
+    } else {
+        $post_data['post_author'] = get_current_user_id();
+        $result                   = wp_insert_post( $post_data, true );
+    }
+
+    if ( ! is_wp_error( $result ) && ( $force_new || $book_id <= 0 ) ) {
+        update_post_meta( (int) $result, '_mbe_ai_generated_draft', '1' );
+    }
+
+    if ( is_wp_error( $result ) ) {
+        wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+    }
+
+    if ( $subtitle !== '' ) {
+        update_post_meta( (int) $result, '_book_subtitle', $subtitle );
+    }
+
+    wp_send_json_success(
+        array(
+            'message'      => $book_id > 0 ? __( 'Book updated.', 'my-book-editor' ) : __( 'Book created as draft.', 'my-book-editor' ),
+            'book_post_id' => (int) $result,
+            'permalink'    => get_permalink( (int) $result ),
+        )
+    );
+}
+
+// Permalink slugs are managed by caast-content-workflow (/book/{slug}/).
 function my_book_editor_activate() {
     my_book_editor_register_cpt();
     my_book_editor_register_taxonomies();

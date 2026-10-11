@@ -1,4 +1,4 @@
-z<?php
+<?php
 /**
  * Chapter Parser Class for Lesson Plan Editor
  * Handles parsing of uploaded books/textbooks into chapters

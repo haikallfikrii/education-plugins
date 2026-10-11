@@ -3,7 +3,7 @@
 Plugin Name: My Lesson Editor
 Plugin URI:  https://example.com/
 Description: A custom editor for lesson profiles, accessible via shortcode, with custom category and level dropdowns, and author selection.
-Version:     1.4.0 // Updated version for new features
+Version:     2.1.6
 Author:      Muhamad Fikri Haikal
 Author URI:  https://caastedu.com/
 License:     GPL2
@@ -20,7 +20,7 @@ $my_lesson_editor_shortcode_used = false;
 
 // Define plugin constants
 if ( ! defined( 'MY_LESSON_EDITOR_VERSION' ) ) {
-    define( 'MY_LESSON_EDITOR_VERSION', '2.0.0' );
+    define( 'MY_LESSON_EDITOR_VERSION', '2.1.6' );
 }
 if ( ! defined( 'MY_LESSON_EDITOR_PLUGIN_URL' ) ) {
     define( 'MY_LESSON_EDITOR_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
@@ -30,9 +30,11 @@ if ( ! defined( 'MY_LESSON_EDITOR_PLUGIN_DIR' ) ) {
 }
 
 // Include required classes
+require_once MY_LESSON_EDITOR_PLUGIN_DIR . 'includes/lesson-list-helpers.php';
 require_once MY_LESSON_EDITOR_PLUGIN_DIR . 'includes/class-chapter-parser.php';
 require_once MY_LESSON_EDITOR_PLUGIN_DIR . 'includes/class-ai-generator.php';
 require_once MY_LESSON_EDITOR_PLUGIN_DIR . 'includes/class-academy-lms-integration.php';
+require_once MY_LESSON_EDITOR_PLUGIN_DIR . 'includes/class-academylm-client.php';
 require_once MY_LESSON_EDITOR_PLUGIN_DIR . 'includes/delete-handler.php';
 
 // Initialize classes
@@ -262,6 +264,10 @@ function my_lesson_editor_enqueue_frontend_assets() {
     }
     $mle_assets_enqueued = true;
 
+    wp_enqueue_style( 'mle-tailwind', 'https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css', array(), '2.2.19' );
+    wp_enqueue_style( 'mle-inter-font', 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap', array(), null );
+    wp_enqueue_style( 'font-awesome', 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css', array(), '5.15.4' );
+
     wp_enqueue_media();
 
     if ( current_user_can( 'edit_posts' ) ) {
@@ -274,9 +280,33 @@ function my_lesson_editor_enqueue_frontend_assets() {
     }
 
     wp_enqueue_script(
+        'mle-shared-uploader',
+        MY_LESSON_EDITOR_PLUGIN_URL . 'js/mle-shared-uploader.js',
+        array(),
+        MY_LESSON_EDITOR_VERSION,
+        true
+    );
+
+    wp_enqueue_script(
         'my-lesson-editor-script',
         MY_LESSON_EDITOR_PLUGIN_URL . 'js/my-lesson-editor.js',
-        array( 'jquery' ),
+        array( 'jquery', 'mle-shared-uploader' ),
+        MY_LESSON_EDITOR_VERSION,
+        true
+    );
+
+    wp_enqueue_script(
+        'mle-layout-resizer',
+        MY_LESSON_EDITOR_PLUGIN_URL . 'js/mle-layout-resizer.js',
+        array(),
+        MY_LESSON_EDITOR_VERSION,
+        true
+    );
+
+    wp_enqueue_script(
+        'mle-lesson-tree',
+        MY_LESSON_EDITOR_PLUGIN_URL . 'js/mle-lesson-tree.js',
+        array( 'jquery', 'my-lesson-editor-script' ),
         MY_LESSON_EDITOR_VERSION,
         true
     );
@@ -292,7 +322,7 @@ function my_lesson_editor_enqueue_frontend_assets() {
     wp_enqueue_style(
         'my-lesson-editor-style',
         MY_LESSON_EDITOR_PLUGIN_URL . 'css/my-lesson-editor.css',
-        array(),
+        array( 'mle-tailwind' ),
         MY_LESSON_EDITOR_VERSION
     );
 
@@ -310,6 +340,27 @@ function my_lesson_editor_enqueue_frontend_assets() {
     );
     wp_localize_script( 'my-lesson-editor-script', 'mylessonEditorAjax', $mle_local );
     wp_localize_script( 'my-lesson-editor-script', 'myLessonPlanEditorAjax', $mle_local );
+}
+
+/**
+ * Ticked placement slugs from the submitted form (checkbox array or legacy single value).
+ *
+ * @return string[]
+ */
+function my_lesson_editor_get_placement_slugs_from_post() {
+	if ( ! isset( $_POST['placement_category'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing
+		return array();
+	}
+
+	$slugs = array();
+	foreach ( (array) wp_unslash( $_POST['placement_category'] ) as $value ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+		$slug = sanitize_title( (string) $value );
+		if ( '' !== $slug && term_exists( $slug, 'lesson_placement' ) ) {
+			$slugs[] = $slug;
+		}
+	}
+
+	return array_values( array_unique( $slugs ) );
 }
 
 /**
@@ -336,7 +387,7 @@ function my_lesson_editor_handle_submission() {
     $lesson_subtitle      = sanitize_text_field( $_POST['lesson_subtitle'] );
     $lesson_content       = wp_kses_post( $_POST['lesson_content'] );
     $lesson_cover_id      = isset( $_POST['lesson_cover_id'] ) ? intval( $_POST['lesson_cover_id'] ) : 0;
-    $placement_category = isset( $_POST['placement_category'] ) ? sanitize_text_field( $_POST['placement_category'] ) : ''; // New: Placement Category
+    $placement_category = my_lesson_editor_get_placement_slugs_from_post();
     $insert_link        = isset( $_POST['insert_link'] ) ? esc_url_raw( $_POST['insert_link'] ) : '';
 
     // Get selected taxonomy terms (slugs)
@@ -345,7 +396,7 @@ function my_lesson_editor_handle_submission() {
     $selected_author_id = isset( $_POST['selected_author_id'] ) ? intval( $_POST['selected_author_id'] ) : 0;
 
     $submit_action      = sanitize_text_field( $_POST['submit_lesson_action'] ); // Existing action for Save/Publish/etc.
-    $placement_action   = sanitize_text_field( $_POST['placement_action'] ); // New: Action for Placement Submit
+    $placement_action   = isset( $_POST['placement_action'] ) ? sanitize_text_field( $_POST['placement_action'] ) : '';
 
     // Determine the lesson title to use for the post
     $post_title = '';
@@ -370,7 +421,22 @@ function my_lesson_editor_handle_submission() {
     $post_status = 'pending';
     $redirect_status = 'error';
 
-    if ( $submit_action === 'publish' ) {
+    if ( 'publish_placement' === $placement_action ) {
+        if ( $existing_post_id <= 0 ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_no_lesson_selected_for_placement', wp_get_referer() ) );
+            exit;
+        }
+        if ( empty( $placement_category ) ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_no_placement_selected', wp_get_referer() ) );
+            exit;
+        }
+        if ( ! current_user_can( 'publish_lesson_profiles' ) && ! current_user_can( 'publish_posts' ) ) {
+            wp_safe_redirect( add_query_arg( 'status', 'error_permissions', wp_get_referer() ) );
+            exit;
+        }
+        $post_status     = 'publish';
+        $redirect_status = 'lesson_published_to_placement';
+    } elseif ( $submit_action === 'publish' ) {
         if ( current_user_can( 'publish_lesson_profiles' ) || current_user_can( 'publish_posts' ) ) {
             $post_status = 'publish';
             $redirect_status = 'lesson_published';
@@ -408,31 +474,6 @@ function my_lesson_editor_handle_submission() {
             }
         } else {
             wp_safe_redirect( add_query_arg( 'status', 'error_no_content_to_delete', wp_get_referer() ) );
-            exit;
-        }
-    } elseif ( $placement_action === 'publish_placement' ) { // Handle new placement publish
-        // Ensure the post exists and the user has permission to publish
-        if ($existing_post_id > 0) {
-            if ( current_user_can( 'publish_lesson_profiles' ) || current_user_can( 'publish_posts' ) ) {
-                // Update post status to publish if not already
-                if (get_post_status($existing_post_id) !== 'publish') {
-                    wp_update_post(array(
-                        'ID'          => $existing_post_id,
-                        'post_status' => 'publish',
-                    ));
-                }
-                // Set the placement taxonomy
-                if (!empty($placement_category)) {
-                    wp_set_post_terms( $existing_post_id, $placement_category, 'lesson_placement' );
-                }
-                $redirect_status = 'lesson_published_to_placement';
-                $post_id = $existing_post_id;
-            } else {
-                wp_safe_redirect( add_query_arg( 'status', 'error_permissions', wp_get_referer() ) );
-                exit;
-            }
-        } else {
-            wp_safe_redirect( add_query_arg( 'status', 'error_no_lesson_selected_for_placement', wp_get_referer() ) );
             exit;
         }
     }
@@ -498,6 +539,11 @@ function my_lesson_editor_handle_submission() {
             wp_set_post_terms( $result, null, 'lesson_level' ); // Clear if no level selected
         }
 
+        $saved_post = get_post( $result );
+        if ( $saved_post ) {
+            update_post_meta( $result, '_mle_book_title', mle_get_lesson_book_title( $saved_post ) );
+        }
+
         wp_safe_redirect( add_query_arg( 'status', $redirect_status, wp_get_referer() ) );
     }
     exit;
@@ -548,7 +594,7 @@ function my_lesson_editor_get_lesson_content_ajax() {
                 'lesson_content'    => $lesson_post->post_content,
                 'lesson_cover_id'   => $lesson_cover_id,
                 'lesson_cover_url'  => $lesson_cover_url,
-                'placement_category' => !empty($current_placement) ? $current_placement[0] : '', // New: Send placement
+                'placement_category' => ( ! empty( $current_placement ) && ! is_wp_error( $current_placement ) ) ? array_values( $current_placement ) : array(),
                 'insert_link'     => esc_url( get_post_meta( $lesson_post->ID, '_insert_link', true ) ),
                 'lesson_categories' => !empty($current_categories) ? $current_categories[0] : '',
                 'lesson_levels'     => !empty($current_levels) ? $current_levels[0] : '',
@@ -562,7 +608,7 @@ function my_lesson_editor_get_lesson_content_ajax() {
                 'lesson_content'    => '',
                 'lesson_cover_id'   => 0,
                 'lesson_cover_url'  => '',
-                'placement_category' => '', // New: Clear placement
+                'placement_category' => array(),
                 'insert_link'     => '',
                 'lesson_categories' => '',
                 'lesson_levels'     => '',
@@ -578,7 +624,7 @@ function my_lesson_editor_get_lesson_content_ajax() {
             'lesson_content'    => '',
             'lesson_cover_id'   => 0,
             'lesson_cover_url'  => '',
-            'placement_category' => '', // New: Clear placement
+            'placement_category' => array(),
             'insert_link'     => '',
             'lesson_categories' => '',
             'lesson_levels'     => '',
@@ -634,9 +680,15 @@ function my_lesson_editor_build_n8n_webhook_envelope( array $automation_in, arra
     $chapter     = isset( $automation_in['chapter'] ) ? sanitize_text_field( $automation_in['chapter'] ) : '';
 
     $difficulty = isset( $automation_in['difficulty_level'] ) ? sanitize_text_field( $automation_in['difficulty_level'] ) : '';
-    $allowed    = array( 'beginner', 'intermediate', 'advanced', 'preparatory', 'regular' );
+    $allowed    = array( 'beginner', 'intermediate', 'advanced', 'preparatory', 'regular', 'honors' );
     if ( $difficulty === '' || ! in_array( $difficulty, $allowed, true ) ) {
-        $difficulty = 'intermediate';
+        $difficulty = 'regular';
+    }
+
+    $grade_level = isset( $automation_in['grade_level'] ) ? sanitize_text_field( $automation_in['grade_level'] ) : '';
+    $allowed_grade = array( 'elementary_school', 'middle_school', 'high_school', 'college' );
+    if ( $grade_level === '' || ! in_array( $grade_level, $allowed_grade, true ) ) {
+        $grade_level = 'middle_school';
     }
 
     $task_prompts = array(
@@ -700,6 +752,7 @@ function my_lesson_editor_build_n8n_webhook_envelope( array $automation_in, arra
         'book_name'         => $book_name,
         'author_name'       => $author_name,
         'difficulty_level'  => $difficulty,
+        'grade_level'       => $grade_level,
         'chapter'           => $chapter,
         'model'             => isset( $automation_in['model'] ) ? sanitize_text_field( $automation_in['model'] ) : 'deepseek_r1',
         'lesson_id'         => isset( $automation_in['lesson_id'] ) ? absint( $automation_in['lesson_id'] ) : 0,
@@ -780,10 +833,85 @@ function my_lesson_editor_extract_automation_output( $data ) {
             if ( $content === '' ) {
                 $content = $pick_content( $inner );
             }
+        } elseif ( $content === '' ) {
+            $content = (string) $data['output'];
+        }
+    }
+
+    if ( $title === '' && ! empty( $data['lesson_title'] ) ) {
+        $title = (string) $data['lesson_title'];
+    }
+    if ( $title === '' && ! empty( $data['book_title'] ) ) {
+        $title = (string) $data['book_title'];
+    }
+    if ( $content === '' && ! empty( $data['lesson_content'] ) ) {
+        $content = (string) $data['lesson_content'];
+    }
+    if ( $content === '' && ! empty( $data['text'] ) && is_string( $data['text'] ) ) {
+        $content = (string) $data['text'];
+    }
+    if ( $content === '' && ! empty( $data['result'] ) && is_string( $data['result'] ) ) {
+        $content = (string) $data['result'];
+    }
+    if ( $content === '' && ! empty( $data['body'] ) && is_string( $data['body'] ) ) {
+        $content = (string) $data['body'];
+    }
+
+    if ( ( $title === '' || $content === '' ) && ! empty( $data['body'] ) && is_array( $data['body'] ) ) {
+        if ( $title === '' ) {
+            $title = $pick_title( $data['body'] );
+        }
+        if ( $content === '' ) {
+            $content = $pick_content( $data['body'] );
+        }
+    }
+
+    if ( ( $title === '' || $content === '' ) && isset( $data[0] ) && is_array( $data[0] ) ) {
+        if ( $title === '' ) {
+            $title = $pick_title( $data[0] );
+        }
+        if ( $content === '' ) {
+            $content = $pick_content( $data[0] );
         }
     }
 
     return array( $title, $content );
+}
+
+/**
+ * Parse n8n HTTP body: strict JSON, fenced markdown, or embedded object.
+ *
+ * @param string $body Raw response body.
+ * @return array{0: ?array, 1: string} Parsed array or null, and text used for fallback content.
+ */
+function my_lesson_editor_normalize_n8n_body( $body ) {
+    $body = trim( (string) $body );
+    if ( $body === '' ) {
+        return array( null, '' );
+    }
+
+    $candidates = array( $body );
+    if ( preg_match( '/```(?:json)?\s*([\s\S]*?)```/i', $body, $fence ) ) {
+        $candidates[] = trim( $fence[1] );
+    }
+    if ( preg_match( '/(\{[\s\S]+\}|\[[\s\S]+\])/', $body, $embedded ) ) {
+        $candidates[] = trim( $embedded[1] );
+    }
+
+    foreach ( $candidates as $candidate ) {
+        if ( $candidate === '' ) {
+            continue;
+        }
+        $data = json_decode( $candidate, true );
+        if ( JSON_ERROR_NONE === json_last_error() && is_array( $data ) ) {
+            if ( isset( $data['data'] ) && is_array( $data['data'] ) && ! isset( $data['final_content'] ) && ! isset( $data['content'] ) ) {
+                $data = $data['data'];
+            }
+            return array( $data, $body );
+        }
+    }
+
+    return array( null, $body );
 }
 
 // AJAX handler for full automation process (for lesson editor)
@@ -881,7 +1009,7 @@ function my_lesson_editor_full_automation_callback() {
 
     $code = (int) wp_remote_retrieve_response_code( $response );
     $body = wp_remote_retrieve_body( $response );
-    $data = json_decode( $body, true );
+    list( $data, $raw_body ) = my_lesson_editor_normalize_n8n_body( $body );
 
     if ( $code < 200 || $code >= 300 ) {
         wp_send_json_error(
@@ -898,27 +1026,35 @@ function my_lesson_editor_full_automation_callback() {
 
     $book_fallback = ! empty( $payload['body']['book_name'] ) ? $payload['body']['book_name'] : __( 'Generated output', 'my-lesson-editor' );
 
-    if ( JSON_ERROR_NONE !== json_last_error() || ! is_array( $data ) ) {
+    if ( ! is_array( $data ) ) {
+        $plain = $raw_body !== '' ? $raw_body : $body;
         wp_send_json_success(
             array(
-                'message'       => __( 'Automation finished (non-JSON response).', 'my-lesson-editor' ),
+                'message'       => __( 'Automation finished.', 'my-lesson-editor' ),
                 'http_code'     => $code,
-                'n8n_response'  => $body,
+                'n8n_response'  => $plain,
                 'final_title'   => $book_fallback,
-                'final_content' => $body,
+                'final_content' => $plain,
             )
         );
     }
 
     list( $final_title, $final_content ) = my_lesson_editor_extract_automation_output( $data );
 
+    if ( $final_title === '' ) {
+        $final_title = $book_fallback;
+    }
+    if ( $final_content === '' ) {
+        $final_content = wp_json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE );
+    }
+
     wp_send_json_success(
         array(
-            'message'       => isset( $data['message'] ) ? $data['message'] : __( 'OK', 'my-lesson-editor' ),
+            'message'       => isset( $data['message'] ) ? $data['message'] : __( 'Automation finished.', 'my-lesson-editor' ),
             'http_code'     => $code,
             'n8n_response'  => $data,
-            'final_title'   => $final_title ? $final_title : $book_fallback,
-            'final_content' => $final_content ? $final_content : wp_json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE ),
+            'final_title'   => $final_title,
+            'final_content' => $final_content,
         )
     );
 }
@@ -948,9 +1084,161 @@ function my_lesson_editor_save_final_content_as_draft_callback() {
 
     if ( is_wp_error( $new_post_id ) ) {
         wp_send_json_error( $new_post_id->get_error_message() );
-    } else {
-        wp_send_json_success( array( 'message' => 'New draft created successfully!', 'post_id' => $new_post_id ) );
     }
+
+    $saved_post = get_post( $new_post_id );
+    if ( $saved_post ) {
+        update_post_meta( $new_post_id, '_mle_book_title', mle_get_lesson_book_title( $saved_post ) );
+    }
+
+    wp_send_json_success(
+        array(
+            'message'     => 'New draft created successfully!',
+            'post_id'     => $new_post_id,
+            'post_title'  => $title,
+            'post_status' => 'draft',
+        )
+    );
+}
+
+/**
+ * Query lesson_profile posts for the Generated Drafts dropdown.
+ *
+ * @return WP_Post[]
+ */
+function my_lesson_editor_query_draft_list_posts() {
+    $query_args = array(
+        'post_type'              => 'lesson_profile',
+        'posts_per_page'         => -1,
+        'post_status'            => array( 'publish', 'draft', 'pending', 'archive' ),
+        'orderby'                => 'modified',
+        'order'                  => 'DESC',
+        'suppress_filters'       => true,
+        'no_found_rows'          => true,
+        'update_post_meta_cache' => false,
+        'update_post_term_cache' => false,
+    );
+
+    if ( ! current_user_can( 'edit_others_posts' ) ) {
+        $query_args['author'] = get_current_user_id();
+    }
+
+    return get_posts( $query_args );
+}
+
+// AJAX: list lesson_profile drafts for Generated Drafts dropdown.
+add_action( 'wp_ajax_my_lesson_editor_get_draft_titles', 'my_lesson_editor_get_draft_titles_callback' );
+function my_lesson_editor_get_draft_titles_callback() {
+    if ( ! isset( $_POST['nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['nonce'] ) ), 'lesson_editor_nonce' ) ) {
+        wp_send_json_error( 'Nonce verification failed.' );
+    }
+
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+        wp_send_json_error( 'Permission denied.' );
+    }
+
+    $posts  = my_lesson_editor_query_draft_list_posts();
+    $titles = array();
+    foreach ( $posts as $post ) {
+        $titles[] = array(
+            'id'     => $post->ID,
+            'title'  => $post->post_title,
+            'status' => $post->post_status,
+        );
+    }
+
+    wp_send_json_success( array( 'drafts' => $titles ) );
+}
+
+// AJAX: grouped lesson tree for right column (by book title).
+add_action( 'wp_ajax_my_lesson_editor_get_grouped_lessons', 'my_lesson_editor_get_grouped_lessons_callback' );
+function my_lesson_editor_get_grouped_lessons_callback() {
+    if ( ! isset( $_POST['nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['nonce'] ) ), 'lesson_editor_nonce' ) ) {
+        wp_send_json_error( array( 'message' => __( 'Nonce verification failed.', 'my-lesson-editor' ) ) );
+    }
+
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+        wp_send_json_error( array( 'message' => __( 'Permission denied.', 'my-lesson-editor' ) ) );
+    }
+
+    $posts = my_lesson_editor_query_draft_list_posts();
+    wp_send_json_success( mle_build_grouped_lesson_tree( $posts ) );
+}
+
+// AJAX: bulk submit selected lesson_profile posts to Academy LMS.
+add_action( 'wp_ajax_mle_bulk_submit_to_academylm', 'mle_ajax_bulk_submit_to_academylm_callback' );
+function mle_ajax_bulk_submit_to_academylm_callback() {
+    if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+        wp_send_json_error( array( 'message' => __( 'Permission denied.', 'my-lesson-editor' ) ), 403 );
+    }
+    check_ajax_referer( 'lesson_editor_nonce', 'nonce' );
+
+    $course_id = isset( $_POST['course_id'] ) ? (int) $_POST['course_id'] : 0;
+    if ( $course_id <= 0 ) {
+        wp_send_json_error( array( 'message' => __( 'Select a course before submitting to LMS.', 'my-lesson-editor' ) ) );
+    }
+
+    $post_ids = isset( $_POST['post_ids'] ) ? wp_unslash( $_POST['post_ids'] ) : array();
+    if ( ! is_array( $post_ids ) || empty( $post_ids ) ) {
+        wp_send_json_error( array( 'message' => __( 'No lessons selected.', 'my-lesson-editor' ) ) );
+    }
+
+    $client  = new MLE_AcademyLM_Client();
+    $results = array(
+        'success' => array(),
+        'failed'  => array(),
+        'skipped' => array(),
+    );
+
+    foreach ( $post_ids as $raw_id ) {
+        $post_id = (int) $raw_id;
+        $post    = get_post( $post_id );
+        if ( ! $post || 'lesson_profile' !== $post->post_type ) {
+            $results['failed'][] = array(
+                'id'      => $post_id,
+                'message' => __( 'Invalid lesson.', 'my-lesson-editor' ),
+            );
+            continue;
+        }
+
+        // create_lesson() also updates content when _mle_academy_lesson_id already exists.
+        $result = $client->create_lesson(
+            array(
+                'title'             => $post->post_title,
+                'content'           => $post->post_content,
+                'course_id'         => $course_id,
+                'lesson_profile_id' => $post_id,
+                'kind'              => mle_get_lesson_item_kind( $post->post_title ),
+            )
+        );
+
+        if ( is_wp_error( $result ) ) {
+            $results['failed'][] = array(
+                'id'      => $post_id,
+                'title'   => $post->post_title,
+                'message' => $result->get_error_message(),
+            );
+            continue;
+        }
+
+        $results['success'][] = array(
+            'id'        => $post_id,
+            'title'     => $post->post_title,
+            'lesson_id' => isset( $result['lesson_id'] ) ? (int) $result['lesson_id'] : 0,
+        );
+    }
+
+    wp_send_json_success(
+        array(
+            'message' => sprintf(
+                /* translators: 1: success count, 2: failed count */
+                __( 'LMS submit finished. %1$d succeeded, %2$d failed.', 'my-lesson-editor' ),
+                count( $results['success'] ),
+                count( $results['failed'] )
+            ),
+            'results' => $results,
+        )
+    );
 }
 
 // AJAX handler for loading content from a specific draft (for "Generated Drafts Content" section in lesson editor)
@@ -1174,6 +1462,108 @@ function my_lesson_editor_get_published_content_callback() {
 /**
  * Shortcode to display the lesson Content Editor.
  */
+/**
+ * AJAX: list AcademyLM courses for the lesson editor dropdown.
+ */
+add_action( 'wp_ajax_mle_get_courses', 'mle_ajax_get_courses_callback' );
+function mle_ajax_get_courses_callback() {
+	if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+		wp_send_json_error( array( 'message' => __( 'Permission denied.', 'my-lesson-editor' ) ), 403 );
+	}
+	check_ajax_referer( 'lesson_editor_nonce', 'nonce' );
+
+	$client  = new MLE_AcademyLM_Client();
+	$courses = $client->get_courses();
+	wp_send_json_success(
+		array(
+			'remote'  => $client->is_remote(),
+			'courses' => $courses,
+		)
+	);
+}
+
+/**
+ * AJAX: extract text from an uploaded desktop file.
+ *
+ * Field name: "upload_file" (multipart/form-data).
+ */
+add_action( 'wp_ajax_mle_extract_text_from_upload', 'mle_ajax_extract_text_from_upload_callback' );
+function mle_ajax_extract_text_from_upload_callback() {
+	if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+		wp_send_json_error( array( 'message' => __( 'Permission denied.', 'my-lesson-editor' ) ), 403 );
+	}
+	check_ajax_referer( 'lesson_editor_nonce', 'nonce' );
+
+	if ( empty( $_FILES['upload_file']['tmp_name'] ) || ! is_uploaded_file( $_FILES['upload_file']['tmp_name'] ) ) {
+		wp_send_json_error( array( 'message' => __( 'No file uploaded.', 'my-lesson-editor' ) ) );
+	}
+
+	$size = isset( $_FILES['upload_file']['size'] ) ? (int) $_FILES['upload_file']['size'] : 0;
+	if ( $size <= 0 || $size > 8 * 1024 * 1024 ) {
+		wp_send_json_error( array( 'message' => __( 'File must be greater than 0 and less than 8 MB.', 'my-lesson-editor' ) ) );
+	}
+
+	$name   = sanitize_file_name( wp_unslash( $_FILES['upload_file']['name'] ) );
+	$client = new MLE_AcademyLM_Client();
+	$text   = $client->extract_text( $_FILES['upload_file']['tmp_name'], $name );
+
+	if ( is_wp_error( $text ) ) {
+		wp_send_json_error( array( 'message' => $text->get_error_message() ) );
+	}
+
+	$preview_html = wpautop( esc_html( wp_check_invalid_utf8( (string) $text, true ) ) );
+	wp_send_json_success(
+		array(
+			'filename' => $name,
+			'size'     => $size,
+			'text'     => (string) $text,
+			'html'     => $preview_html,
+		)
+	);
+}
+
+/**
+ * AJAX: submit current main editor content to AcademyLM.
+ */
+add_action( 'wp_ajax_mle_submit_to_academylm', 'mle_ajax_submit_to_academylm_callback' );
+function mle_ajax_submit_to_academylm_callback() {
+	if ( ! is_user_logged_in() || ! current_user_can( 'edit_posts' ) ) {
+		wp_send_json_error( array( 'message' => __( 'Permission denied.', 'my-lesson-editor' ) ), 403 );
+	}
+	check_ajax_referer( 'lesson_editor_nonce', 'nonce' );
+
+	$title     = isset( $_POST['title'] ) ? sanitize_text_field( wp_unslash( $_POST['title'] ) ) : '';
+	$content   = isset( $_POST['content'] ) ? wp_kses_post( wp_unslash( $_POST['content'] ) ) : '';
+	$course_id = isset( $_POST['course_id'] ) ? sanitize_text_field( wp_unslash( $_POST['course_id'] ) ) : '';
+
+	if ( $title === '' || $content === '' ) {
+		wp_send_json_error( array( 'message' => __( 'Title and content are required.', 'my-lesson-editor' ) ) );
+	}
+
+	$client = new MLE_AcademyLM_Client();
+	$result = $client->create_lesson(
+		array(
+			'title'             => $title,
+			'content'           => $content,
+			'course_id'         => $course_id,
+			'lesson_profile_id' => isset( $_POST['lesson_profile_id'] ) ? (int) $_POST['lesson_profile_id'] : 0,
+			'kind'              => isset( $_POST['kind'] ) ? sanitize_text_field( wp_unslash( $_POST['kind'] ) ) : mle_get_lesson_item_kind( $title ),
+		)
+	);
+
+	if ( is_wp_error( $result ) ) {
+		wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+	}
+
+	wp_send_json_success(
+		array(
+			'message'   => __( 'Lesson submitted to AcademyLM.', 'my-lesson-editor' ),
+			'lesson_id' => isset( $result['lesson_id'] ) ? $result['lesson_id'] : 0,
+			'remote'    => ! empty( $result['remote'] ),
+		)
+	);
+}
+
 function my_lesson_editor_shortcode() {
     global $my_lesson_editor_shortcode_used;
     $my_lesson_editor_shortcode_used = true;
@@ -1242,6 +1632,9 @@ function my_lesson_editor_shortcode() {
             case 'error_permissions':
                 $status_message = 'You do not have sufficient permissions to perform this action.';
                 $status_class = 'bg-red-100 border border-red-400 text-red-700'; break;
+            case 'error_no_placement_selected':
+                $status_message = 'Please tick at least one placement before publishing to placement.';
+                $status_class = 'bg-red-100 border border-red-400 text-red-700'; break;
             case 'error_no_lesson_selected_for_placement': // New error status
                 $status_message = 'Please Select a lesson before attempting to publish to a placement.';
                 $status_class = 'bg-red-100 border border-red-400 text-red-700'; break;
@@ -1249,166 +1642,143 @@ function my_lesson_editor_shortcode() {
                 $status_message = 'An unknown status occurred.';
                 $status_class = 'bg-red-100 border border-red-400 text-red-700';
         }
-        echo '<div class="notice ' . esc_attr($status_class) . ' px-4 py-3 rounded-none relative mb-4 is-dismissible"><p>' . esc_html($status_message) . '</p></div>';
+        $notice_class = ( strpos( $status_class, 'red' ) !== false ) ? 'caast-status--error' : 'caast-status--success';
+        echo '<div class="caast-status ' . esc_attr( $notice_class ) . ' relative mb-4 mx-4 lg:mx-6 mt-4 is-dismissible"><p>' . esc_html($status_message) . '</p></div>';
     }
 
     $current_user = wp_get_current_user();
     $user_email = $current_user->user_email;
-    $user_avatar = get_avatar_url( $current_user->ID, array( 'size' => 24 ) );
+    $user_avatar = get_avatar_url( $current_user->ID, array( 'size' => 32 ) );
 
     ?>
-    <div class="bg-gray-100 text-[12px] text-gray-600 font-mono flex justify-end gap-9 px-20 py-1 max-w-12xl mx-auto">
-        <span>myEMAIL</span>
-        <span>myCALENDAR</span>
-        <span>myPROJECTS</span>
-        <span>myLEARNING</span>
-        <span>myWORK</span>
-        <a href="<?php echo esc_url( wp_logout_url( get_permalink() ) ); ?>" class="text-gray-600 hover:text-black">Logout</a>
-    </div>
+    <div class="caast-dashboard min-h-screen">
+    <header class="caast-topbar">
+        <span class="caast-topbar__brand">CAASTEdu · Lesson Content Editor</span>
+        <div class="caast-topbar__actions">
+            <a href="https://caastedu.com/dashboard/" class="caast-topbar__link">Dashboard</a>
+            <button type="button" id="mle_reset_layout" class="caast-topbar__link caast-topbar__btn" title="<?php esc_attr_e( 'Reset column widths to default', 'my-lesson-editor' ); ?>"><?php esc_html_e( 'Reset layout', 'my-lesson-editor' ); ?></button>
+            <a href="<?php echo esc_url( wp_logout_url( get_permalink() ) ); ?>" class="caast-topbar__link">Logout</a>
+        </div>
+    </header>
 
-    <main class="w-full mx-auto flex flex-col lg:flex-row gap-2 px-2 py-2 min-h-screen">
+    <div class="caast-layout mle-resizable-layout" id="mle-resizable-layout">
         <input type="hidden" id="caast_delete_nonce" value="<?php echo esc_attr( $caast_delete_nonce ); ?>">
-        <aside aria-label="Left admin navigation panel" class="w-full lg:w-64 xl:w-72 border border-gray-300 rounded-none p-3 text-xs text-gray-700 font-sans bg-white flex-shrink-0 max-h-screen overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-            <!-- User Profile Section -->
-            <div class="flex items-center gap-2 mb-4 p-2 bg-gray-50 rounded-lg">
-                <img alt="User avatar placeholder" class="rounded-full w-8 h-8 flex-shrink-0" src="<?php echo esc_url($user_avatar); ?>" />
-                <div class="flex-1 min-w-0">
-                    <span class="block text-xs font-medium text-gray-900 truncate"><?php echo esc_html($user_email); ?></span>
-                    <span class="block text-xs text-gray-500">Content Editor</span>
-            </div>
-                <i class="fas fa-sync-alt cursor-pointer text-gray-400 text-sm hover:text-gray-600 transition-colors"></i>
+        <aside aria-label="Left admin navigation panel" class="caast-col caast-col--nav caast-sidebar hide-scrollbar">
+            <div class="caast-sidebar__profile">
+                <img alt="User avatar" class="caast-sidebar__avatar" src="<?php echo esc_url($user_avatar); ?>" />
+                <span class="caast-sidebar__profile-name"><?php echo esc_html($user_email); ?></span>
+                <span class="caast-sidebar__profile-role">Content Editor</span>
             </div>
             
             <!-- Navigation Menu -->
             <nav class="space-y-1">
-                <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3 px-2">Website Content Editor</h2>
+                <h2 class="caast-nav-heading">Website Content Editor</h2>
                 
                 <!-- Content Editor Links -->
                 <div class="space-y-1 mb-4">
-                    <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/author-endpoint-v2/">
-                        <i class="fas fa-user text-gray-500 w-4"></i> 
+                    <a class="caast-nav-link" href="https://caastedu.com/author-endpoint-v2/">
+                        <i class="fas fa-user"></i> 
                         <span>Author Endpoint</span>
                     </a>
-                    <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/article-endpoint/">
-                        <i class="fas fa-newspaper text-gray-500 w-4"></i> 
+                    <a class="caast-nav-link" href="https://caastedu.com/article-endpoint/">
+                        <i class="fas fa-newspaper"></i> 
                         <span>Article Endpoint</span>
                     </a>
-                    <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/book-endpoint/">
-                        <i class="fas fa-book-open text-gray-500 w-4"></i> 
+                    <a class="caast-nav-link" href="https://caastedu.com/book-endpoint/">
+                        <i class="fas fa-book-open"></i> 
                         <span>Book Endpoint</span>
                     </a>
-                    <a class="flex items-center gap-3 bg-blue-50 text-blue-700 rounded-lg px-3 py-2 text-xs font-medium" href="https://caastedu.com/llesson-plan-editor/">
-                        <i class="fas fa-file-alt text-blue-600 w-4"></i> 
+                    <a class="caast-nav-link is-active" href="https://caastedu.com/llesson-plan-editor/">
+                        <i class="fas fa-file-alt"></i> 
                         <span>Lesson Endpoint</span>
                     </a>
-                    <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/video-endpoint/">
-                        <i class="fab fa-youtube text-gray-500 w-4"></i> 
+                    <a class="caast-nav-link" href="https://caastedu.com/video-endpoint/">
+                        <i class="fab fa-youtube"></i> 
                         <span>Video Endpoint</span>
                     </a>
-                    <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/content-automation/">
-                        <i class="fas fa-robot text-gray-500 w-4"></i> 
+                    <a class="caast-nav-link" href="https://caastedu.com/content-automation/">
+                        <i class="fas fa-robot"></i> 
                         <span>Content Automation</span>
                     </a>
                 </div>
                 
                 <!-- Dashboard Links -->
-                <div class="border-t border-gray-200 pt-4">
-                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3 px-2">Dashboard</h3>
+                <div class="border-t caast-nav-divider pt-4">
+                    <h3 class="caast-nav-heading">Dashboard</h3>
                     <div class="space-y-1">
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/">
-                            <i class="fas fa-th-large text-gray-500 w-4"></i> 
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/">
+                            <i class="fas fa-th-large"></i> 
                             <span>Dashboard</span>
                         </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/profile/">
-                            <i class="fas fa-user text-gray-500 w-4"></i> 
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/profile/">
+                            <i class="fas fa-user"></i> 
                             <span>My Profile</span>
                         </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/enrolled-courses/">
-                            <i class="fas fa-graduation-cap text-gray-500 w-4"></i> 
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/enrolled-courses/">
+                            <i class="fas fa-graduation-cap"></i> 
                             <span>Enrolled Courses</span>
                         </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/my-lessonings/">
-                            <i class="fas fa-calendar-check text-gray-500 w-4"></i> 
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/my-lessonings/">
+                            <i class="fas fa-calendar-check"></i> 
                             <span>My Tutor Sessions</span>
                         </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/download-certificate/">
-                            <i class="fas fa-download text-gray-500 w-4"></i> 
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/download-certificate/">
+                            <i class="fas fa-download"></i> 
                             <span>Download Certificates</span>
                         </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/wishlist/">
-                            <i class="far fa-heart text-gray-500 w-4"></i> 
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/wishlist/">
+                            <i class="far fa-heart"></i> 
                             <span>Wishlist</span>
                         </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/reviews/">
-                            <i class="far fa-star text-gray-500 w-4"></i> 
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/reviews/">
+                            <i class="far fa-star"></i> 
                             <span>Reviews</span>
                         </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/purchase-history/">
-                            <i class="fas fa-history text-gray-500 w-4"></i> 
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/purchase-history/">
+                            <i class="fas fa-history"></i> 
                             <span>Purchase History</span>
                         </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/my-account/">
-                            <i class="fas fa-store text-gray-500 w-4"></i> 
+                        <a class="caast-nav-link" href="https://caastedu.com/my-account/">
+                            <i class="fas fa-store"></i> 
                             <span>Store Dashboard</span>
                         </a>
                     </div>
                 </div>
                 
                 <!-- Course Management Links -->
-                <div class="border-t border-gray-200 pt-4">
-                    <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3 px-2">Course Management</h3>
+                <div class="border-t caast-nav-divider pt-4">
+                    <h3 class="caast-nav-heading">Course Management</h3>
                     <div class="space-y-1">
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/courses/">
-                            <div class="flex items-center gap-3">
-                                <i class="fas fa-graduation-cap text-gray-500 w-4"></i> 
-                                <span>Courses</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/courses/">
+                            <span class="flex items-center gap-3"><i class="fas fa-graduation-cap"></i><span>Courses</span></span>
+                            <i class="fas fa-chevron-right text-xs opacity-50"></i>
                         </a>
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/lessons/">
-                            <div class="flex items-center gap-3">
-                                <i class="fas fa-file-alt text-gray-500 w-4"></i> 
-                                <span>All Lessons</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/lessons/">
+                            <span class="flex items-center gap-3"><i class="fas fa-file-alt"></i><span>All Lessons</span></span>
+                            <i class="fas fa-chevron-right text-xs opacity-50"></i>
                         </a>
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/quizzes/">
-                            <div class="flex items-center gap-3">
-                                <i class="fas fa-question-circle text-gray-500 w-4"></i> 
-                                <span>Quizzes</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/quizzes/">
+                            <span class="flex items-center gap-3"><i class="fas fa-question-circle"></i><span>Quizzes</span></span>
+                            <i class="fas fa-chevron-right text-xs opacity-50"></i>
                         </a>
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/meeting/">
-                            <div class="flex items-center gap-3">
-                                <i class="fab fa-youtube text-gray-500 w-4"></i> 
-                                <span>Meetings</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/meeting/">
+                            <span class="flex items-center gap-3"><i class="fab fa-youtube"></i><span>Meetings</span></span>
+                            <i class="fas fa-chevron-right text-xs opacity-50"></i>
                         </a>
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/tutor-lessoning/">
-                            <div class="flex items-center gap-3">
-                                <i class="fas fa-calendar-check text-gray-500 w-4"></i> 
-                                <span>Tutor Sessions</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/tutor-lessoning/">
+                            <span class="flex items-center gap-3"><i class="fas fa-calendar-check"></i><span>Tutor Sessions</span></span>
+                            <i class="fas fa-chevron-right text-xs opacity-50"></i>
                         </a>
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/assignments/">
-                            <div class="flex items-center gap-3">
-                                <i class="fas fa-tasks text-gray-500 w-4"></i> 
-                                <span>Assignments</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/assignments/">
+                            <span class="flex items-center gap-3"><i class="fas fa-tasks"></i><span>Assignments</span></span>
+                            <i class="fas fa-chevron-right text-xs opacity-50"></i>
                         </a>
-                        <a class="flex items-center justify-between hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/question-answer/">
-                            <div class="flex items-center gap-3">
-                                <i class="fas fa-question-circle text-gray-500 w-4"></i> 
-                                <span>Q&A</span>
-                            </div>
-                            <i class="fas fa-chevron-right text-xs text-gray-400"></i>
+                        <a class="caast-nav-link justify-between" href="https://caastedu.com/dashboard/question-answer/">
+                            <span class="flex items-center gap-3"><i class="fas fa-question-circle"></i><span>Q&A</span></span>
+                            <i class="fas fa-chevron-right text-xs opacity-50"></i>
                         </a>
-                        <a class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors" href="https://caastedu.com/dashboard/announcements/">
-                            <i class="fas fa-bullhorn text-gray-500 w-4"></i> 
+                        <a class="caast-nav-link" href="https://caastedu.com/dashboard/announcements/">
+                            <i class="fas fa-bullhorn"></i> 
                             <span>Announcements</span>
                         </a>
                     </div>
@@ -1416,28 +1786,32 @@ function my_lesson_editor_shortcode() {
             </nav>
             
             <!-- Settings Section -->
-            <div class="border-t border-gray-200 pt-4 mt-4">
-                <a href="https://caastedu.com/dashboard/settings/" class="flex items-center gap-3 hover:bg-gray-50 rounded-lg px-3 py-2 text-gray-700 text-xs transition-colors">
-                    <i class="fas fa-cog text-gray-500 w-4"></i> 
+            <div class="border-t caast-nav-divider pt-4 mt-4">
+                <a href="https://caastedu.com/dashboard/settings/" class="caast-nav-link">
+                    <i class="fas fa-cog"></i> 
                     <span>Settings</span>
                 </a>
             </div>
         </aside>
 
-        <section class="flex-1 flex flex-col lg:flex-row gap-3 w-full max-h-screen overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]" style="min-height:100vh;">
-            <!-- Main Content Area -->
-            <div class="flex-1 bg-white border border-gray-300 rounded-none p-2 lg:p-6 min-h-[calc(100vh-40px)] flex flex-col w-full">
-                <h2 class="text-xl font-semibold mb-4">Lesson Content Editor</h2>
+        <div class="mle-layout-resizer" data-resize="nav" role="separator" aria-orientation="vertical" aria-label="<?php esc_attr_e( 'Resize navigation column', 'my-lesson-editor' ); ?>" tabindex="0"></div>
 
-                <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" enctype="multipart/form-data" class="font-sans w-full flex flex-col flex-1 box-shadow:none" id="lesson-editor-form" style="max-width: none !important; box-shadow: none !important; border-radius: 0 !important; margin: 0 !important; padding: 0 !important; background: transparent !important;">
+            <div class="caast-col caast-col--editor caast-col-pane">
+                <header class="caast-pane-header">
+                    <h1 class="caast-page-title">Lesson Content Editor</h1>
+                    <p class="caast-page-subtitle">Select an author or lesson, manage content, and run AI automation.</p>
+                </header>
+
+                <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" enctype="multipart/form-data" class="w-full flex flex-col flex-1" id="lesson-editor-form">
                     <input type="hidden" name="action" value="my_lesson_editor_submit">
                     <?php wp_nonce_field('lesson_content_submission', '_wpnonce_lesson_content'); ?>
                     <input type="hidden" name="lesson_post_id" id="lesson_post_id" value="<?php echo esc_attr( $lesson_post_id_val ); ?>">
 
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 items-end mb-3 w-full">
+                    <div class="caast-form-section space-y-4">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end w-full">
                         <div class="md:col-span-2">
-                            <label for="selected_author_id" class="block text-sm font-medium text-gray-700">Select an author</label>
-                            <select name="selected_author_id" id="selected_author_id" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                            <label for="selected_author_id" class="caast-label">Select an author</label>
+                            <select name="selected_author_id" id="selected_author_id" class="caast-select">
                                 <option value="">-- Select an author --</option>
                                 <?php
                                 // Fetch authors from 'author_profile' CPT
@@ -1456,14 +1830,14 @@ function my_lesson_editor_shortcode() {
                             </select>
                         </div>
                         <div class="flex items-end">
-                            <button type="button" id="load-author-content-btn" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full">Submit</button>
+                            <button type="button" id="load-author-content-btn" class="caast-btn caast-btn--secondary caast-btn--block">Load author</button>
                         </div>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 items-end mb-3 w-full">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end w-full">
                         <div class="md:col-span-2">
-                            <label for="selected_lesson_id" class="block text-sm font-medium text-gray-700">Select a lesson</label>
-                            <select name="selected_lesson_id" id="selected_lesson_id" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                            <label for="selected_lesson_id" class="caast-label">Select a lesson</label>
+                            <select name="selected_lesson_id" id="selected_lesson_id" class="caast-select">
                                 <option value="">-- Select a lesson --</option>
                                 <?php
                                 $lessons = get_posts( array(
@@ -1480,25 +1854,70 @@ function my_lesson_editor_shortcode() {
                             </select>
                         </div>
                         <div class="flex items-end">
-                            <button type="button" id="load-lesson-content-btn" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full">Submit</button>
+                            <button type="button" id="load-lesson-content-btn" class="caast-btn caast-btn--secondary caast-btn--block">Load lesson</button>
                         </div>
                     </div>
-
-                    <div class="flex flex-col mb-3 w-full">
-                        <label for="new_lesson_name" class="block text-sm font-medium text-gray-700">Add a lesson</label>
-                        <input type="text" name="new_lesson_name" id="new_lesson_name" placeholder="Enter lesson name" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" value="<?php echo esc_attr($lesson_name_val); ?>" />
                     </div>
 
-                    <div class="flex flex-col mb-3 w-full">
-                        <label for="lesson_subtitle" class="block text-sm font-medium text-gray-700">lesson Subtitle:</label>
-                        <input type="text" name="lesson_subtitle" id="lesson_subtitle" placeholder="lesson subtitle text" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" value="<?php echo esc_attr($lesson_subtitle_val); ?>" />
+                    <!-- AcademyLM Course + Source/Action Block -->
+                    <div class="caast-form-section caast-form-section--muted" data-mle-uploader="lesson">
+                        <h3 class="caast-form-section__title"><?php esc_html_e( 'Course & file upload', 'my-lesson-editor' ); ?></h3>
+                        <p class="caast-form-section__desc"><?php esc_html_e( 'Connect to AcademyLM, upload source files, and submit to your course folder.', 'my-lesson-editor' ); ?></p>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end mb-4 w-full">
+                            <div class="md:col-span-2">
+                                <div class="flex items-center justify-between mb-1">
+                                    <label for="select_academylm_course" class="caast-label mb-0"><?php esc_html_e( 'Select a Course (Learning Management System)', 'my-lesson-editor' ); ?></label>
+                                    <a href="https://caastedu.com/wp-admin/admin.php?page=academy-courses" target="_blank" rel="noopener noreferrer" class="text-xs text-blue-600 hover:text-blue-800 hover:underline font-medium ml-2 whitespace-nowrap"><?php esc_html_e( 'Course Setting', 'my-lesson-editor' ); ?> &#x2197;</a>
+                                </div>
+                                <select id="select_academylm_course" name="select_academylm_course" class="caast-select">
+                                    <option value=""><?php esc_html_e( 'Loading courses…', 'my-lesson-editor' ); ?></option>
+                                </select>
+                            </div>
+                            <div class="flex items-end">
+                                <button type="button" id="refresh-academylm-courses" class="caast-btn caast-btn--secondary caast-btn--block"><?php esc_html_e( 'Refresh', 'my-lesson-editor' ); ?></button>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-col mb-4 w-full">
+                            <label for="mle_source_book_name" class="caast-label"><?php esc_html_e( 'Book Name', 'my-lesson-editor' ); ?></label>
+                            <input type="text" id="mle_source_book_name" name="mle_source_book_name" placeholder="<?php esc_attr_e( 'Mirrors the AI Book Name or upload filename', 'my-lesson-editor' ); ?>" class="caast-input" />
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-2 w-full">
+                            <button type="button" data-mle-action="upload" class="caast-btn caast-btn--secondary caast-btn--block">
+                                <span class="mle-btn-label"><?php esc_html_e( 'Upload', 'my-lesson-editor' ); ?></span>
+                                <span class="mle-btn-spinner hidden inline-block w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" aria-hidden="true"></span>
+                            </button>
+                            <button type="button" data-mle-action="edit" class="caast-btn caast-btn--secondary caast-btn--block">
+                                <span class="mle-btn-label"><?php esc_html_e( 'Edit', 'my-lesson-editor' ); ?></span>
+                                <span class="mle-btn-spinner hidden inline-block w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" aria-hidden="true"></span>
+                            </button>
+                            <button type="button" data-mle-action="submit" class="caast-btn caast-btn--primary caast-btn--block">
+                                <span class="mle-btn-label"><?php esc_html_e( 'Submit', 'my-lesson-editor' ); ?></span>
+                                <span class="mle-btn-spinner hidden inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true"></span>
+                            </button>
+                        </div>
+
+                        <input type="file" data-mle-file="hidden" class="hidden" accept=".pdf,.txt,.md,.csv,.doc,.docx" />
+                        <p data-mle-status class="caast-meta mt-2 min-h-[1rem]" role="status" aria-live="polite"></p>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 items-end mb-3 w-full">
+                    <div class="caast-form-section space-y-4">
+                    <div class="flex flex-col w-full">
+                        <label for="new_lesson_name" class="caast-label">Add a lesson</label>
+                        <input type="text" name="new_lesson_name" id="new_lesson_name" placeholder="Enter lesson name" class="caast-input" value="<?php echo esc_attr($lesson_name_val); ?>" />
+                    </div>
+
+                    <div class="flex flex-col w-full">
+                        <label for="lesson_subtitle" class="caast-label">Lesson subtitle</label>
+                        <input type="text" name="lesson_subtitle" id="lesson_subtitle" placeholder="Lesson subtitle text" class="caast-input" value="<?php echo esc_attr($lesson_subtitle_val); ?>" />
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end w-full">
                         <div class="md:col-span-2">
-                            <label class="block text-sm font-medium text-gray-700">Upload lesson cover image</label>
+                            <label class="caast-label">Upload lesson cover image</label>
                             <div class="mt-1 flex items-center gap-2">
-                                <input type="text" id="lesson_cover_url" name="lesson_cover_url" class="flex-grow border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" placeholder="Browse lesson cover" readonly value="<?php echo esc_url($lesson_cover_url_val); ?>" />
+                                <input type="text" id="lesson_cover_url" name="lesson_cover_url" class="caast-input flex-grow" placeholder="Browse lesson cover" readonly value="<?php echo esc_url($lesson_cover_url_val); ?>" />
                                 <input type="hidden" id="lesson_cover_id" name="lesson_cover_id" value="<?php echo esc_attr($lesson_cover_id_val); ?>" />
                             </div>
                             <div id="lesson-cover-preview" class="mt-2 text-center" style="<?php echo empty($lesson_cover_url_val) ? 'display:none;' : ''; ?>">
@@ -1507,12 +1926,12 @@ function my_lesson_editor_shortcode() {
                             </div>
                         </div>
                         <div class="flex items-end">
-                            <button type="button" class="button button-secondary browse-lesson-cover bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full">Browse</button>
+                                <button type="button" class="caast-btn caast-btn--secondary caast-btn--block browse-lesson-cover">Browse</button>
                         </div>
                     </div>
 
-                    <div class="mb-3 w-full">
-                        <label for="lesson_content" class="block text-sm font-medium text-gray-700">Body Content:</label>
+                    <div class="w-full">
+                        <label for="lesson_content" class="caast-label">Body content</label>
                         <?php
                         if ( current_user_can( 'edit_posts' ) ) {
                             wp_editor( $lesson_content_val, 'lesson_content', array(
@@ -1533,10 +1952,10 @@ function my_lesson_editor_shortcode() {
                         ?>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 w-full">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
                         <div>
-                            <label for="lesson_category" class="block text-sm font-medium text-gray-700">Select a category</label>
-                            <select name="lesson_category" id="lesson_category" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                            <label for="lesson_category" class="caast-label">Category</label>
+                            <select name="lesson_category" id="lesson_category" class="caast-select">
                                 <option value="">-- Select a category --</option>
                                 <?php
                                 $categories = get_terms( array(
@@ -1551,10 +1970,8 @@ function my_lesson_editor_shortcode() {
                             </select>
                         </div>
                         <div>
-                            <label for="lesson_level" class="block text-gray-700 text-sm font-bold mb-2">
-                                lesson Level:
-                            </label>
-                            <select name="lesson_level" id="lesson_level" class="w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                            <label for="lesson_level" class="caast-label">Lesson level</label>
+                            <select name="lesson_level" id="lesson_level" class="caast-select">
                                 <option value="">-- Select a Level --</option>
                                 <option value="beginner">Beginner</option>
                                 <option value="intermediate">Intermediate</option>
@@ -1563,10 +1980,10 @@ function my_lesson_editor_shortcode() {
                         </div>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 mb-4 w-full">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 w-full pt-2 border-t border-slate-100">
                         <div class="md:col-span-2 flex flex-col">
-                            <label for="submit_lesson_action_select" class="block text-sm font-medium text-gray-700">Action</label>
-                            <select name="submit_lesson_action" id="submit_lesson_action_select" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                            <label for="submit_lesson_action_select" class="caast-label">Action</label>
+                            <select name="submit_lesson_action" id="submit_lesson_action_select" class="caast-select">
                                 <option value="save">Save Draft</option>
                                 <option value="publish">Publish Ready</option>
                                 <option value="unpublish">Unpublish</option>
@@ -1575,258 +1992,229 @@ function my_lesson_editor_shortcode() {
                             </select>
                         </div>
                         <div class="flex items-end">
-                            <button type="submit" name="submit_lesson_action_btn" value="submit" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full">Submit</button>
+                            <button type="submit" name="submit_lesson_action_btn" value="submit" class="caast-btn caast-btn--secondary caast-btn--block">Submit</button>
                         </div>
                     </div>
 
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 mb-4 w-full">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 w-full">
                         <div class="flex flex-col md:col-span-2">
-                            <label for="placement_category" class="block text-sm font-medium text-gray-700">Placement Category</label>
-                            <select name="placement_category" id="placement_category" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
-                                <option value="">-- Select Placement --</option>
+                            <label class="caast-label">Placement category</label>
+                            <div id="placement_category" class="caast-placement-checkboxes space-y-1">
                                 <?php
                                 $placements = get_terms( array(
                                     'taxonomy'   => 'lesson_placement',
                                     'hide_empty' => false,
                                 ) );
-                                foreach ( $placements as $placement ) {
-                                    $selected = ( $placement_category_val === $placement->slug ) ? 'selected' : '';
-                                    echo '<option value="' . esc_attr( $placement->slug ) . '" ' . $selected . '>' . esc_html( $placement->name ) . '</option>';
+                                if ( ! is_wp_error( $placements ) ) {
+                                    foreach ( $placements as $placement ) {
+                                        echo '<label class="caast-checkbox-row flex items-center gap-2"><input type="checkbox" class="caast-placement-checkbox" name="placement_category[]" value="' . esc_attr( $placement->slug ) . '"> <span>' . esc_html( $placement->name ) . '</span></label>';
+                                    }
                                 }
                                 ?>
-                            </select>
+                            </div>
+                            <p class="caast-meta mt-1">Tick one or more placements to publish this lesson to multiple sections at the same time.</p>
                         </div>
                         <!--<div class="flex flex-col">-->
                         <!--    <label for="insert_link" class="block text-sm font-medium text-gray-700">Insert Link</label>-->
                         <!--    <input type="url" name="insert_link" id="insert_link" placeholder="https://example.com" class="mt-1 block w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" value="<?php echo esc_url($insert_link_val); ?>" />-->
                         <!--</div>-->
                         <div class="flex items-end">
-                            <button type="submit" name="placement_action" value="publish_placement" class="button button-primary bg-blue-600 text-white px-4 py-2 rounded-none hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 w-full">Publish</button>
+                            <button type="submit" name="placement_action" value="publish_placement" class="caast-btn caast-btn--success caast-btn--block">Publish</button>
                         </div>
+                    </div>
                     </div>
                 </form>
             </div>
-        <style>
-            @media (max-width: 1024px) {
-                section.flex-1.flex, section .flex-1 {
-                    min-height: unset !important;
-                }
-            }
-            section.flex-1.flex {
-                min-height: 100vh;
-                width: 100vw;
-                max-width: 100vw;
-            }
-            section.flex-1.flex .flex-1 {
-                min-width:0;
-                flex-shrink:1;
-                flex-grow:1;
-                width: 100%;
-                display: flex;
-                flex-direction: column;
-            }
-            #lesson-editor-form {
-                flex: 1 1 auto;
-                min-height: 0;
-                max-width: 100vw;
-            }
-            @media (max-width: 640px) {
-                section.flex-1.flex .flex-1 {
-                    padding: 0.5rem !important;
-                }
-                #lesson-editor-form {
-                    padding: 0 !important;
-                }
-            }
-        </style>
-        <!-- Responsiveness to avoid blank spaces on browser zoom -->
-        <script>
-        (function() {
-            function fixVH() {
-                // Ensure full vertical fill even if zoomed.
-                document.querySelectorAll('section.flex-1.flex').forEach(function(section) {
-                    section.style.minHeight = window.innerHeight + 'px';
-                });
-            }
-            window.addEventListener('resize', fixVH);
-            window.addEventListener('zoom', fixVH); // Just in case; not widely supported.
-            fixVH();
-        })();
-        </script>
 
+            <div class="mle-layout-resizer" data-resize="ai" role="separator" aria-orientation="vertical" aria-label="<?php esc_attr_e( 'Resize AI panel', 'my-lesson-editor' ); ?>" tabindex="0"></div>
 
+            <aside class="caast-col caast-col--ai caast-col-pane hide-scrollbar space-y-4">
+                <header>
+                    <h2 class="caast-section-title"><?php esc_html_e( 'AI Content Generator', 'my-lesson-editor' ); ?></h2>
+                    <p class="caast-meta mt-1"><?php esc_html_e( 'Choose a model, select content types, and start automation.', 'my-lesson-editor' ); ?></p>
+                </header>
 
-
-
-            <!-- AI Content Generator Sidebar -->
-            <aside class="w-full lg:w-1/4 bg-white border border-gray-300 rounded-lg p-4 lg:p-6 shadow-md max-h-screen overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-                <h2 class="text-xl font-semibold text-gray-800 mb-4"><?php esc_html_e( 'AI Content Generator', 'my-lesson-editor' ); ?></h2>
-
-                <div class="mb-6">
-                    <h3 class="text-lg font-semibold text-gray-800 mb-3"><?php esc_html_e( 'Reference and context', 'my-lesson-editor' ); ?></h3>
-                    <div class="mb-4">
-                        <label for="book_title" class="block text-gray-700 text-sm font-bold mb-2"><?php esc_html_e( 'Book / textbook title', 'my-lesson-editor' ); ?></label>
-                        <input type="text" id="book_title" class="form-input mt-1 block w-full border border-gray-300 rounded-none shadow-sm p-2" placeholder="<?php esc_attr_e( 'Optional — uses lesson title if empty', 'my-lesson-editor' ); ?>">
+                <div class="space-y-4">
+                    <h3 class="text-sm font-semibold text-slate-800 uppercase tracking-wide"><?php esc_html_e( 'Reference & context', 'my-lesson-editor' ); ?></h3>
+                    <div>
+                        <label for="book_title" class="caast-label"><?php esc_html_e( 'Book / textbook title', 'my-lesson-editor' ); ?></label>
+                        <input type="text" id="book_title" class="caast-input form-input" placeholder="<?php esc_attr_e( 'Optional — uses lesson title if empty', 'my-lesson-editor' ); ?>">
                     </div>
-                    <div class="mb-4">
-                        <label for="ai_chapter" class="block text-gray-700 text-sm font-bold mb-2"><?php esc_html_e( 'Chapter number or name', 'my-lesson-editor' ); ?></label>
-                        <input type="text" id="ai_chapter" class="form-input mt-1 block w-full border border-gray-300 rounded-none shadow-sm p-2" placeholder="<?php esc_attr_e( 'e.g. Chapter 1 (optional)', 'my-lesson-editor' ); ?>">
+                    <div>
+                        <label for="ai_chapter" class="caast-label"><?php esc_html_e( 'Chapter number or name', 'my-lesson-editor' ); ?></label>
+                        <input type="text" id="ai_chapter" class="caast-input form-input" placeholder="<?php esc_attr_e( 'e.g. Chapter 1 (optional)', 'my-lesson-editor' ); ?>">
                     </div>
-                    <div class="mb-4">
-                        <label for="llm_model_select" class="block text-gray-700 text-sm font-bold mb-2"><?php esc_html_e( 'AI model', 'my-lesson-editor' ); ?></label>
-                        <select id="llm_model_select" class="form-input mt-1 block w-full border border-gray-300 rounded-none shadow-sm p-2">
+                    <div>
+                        <label for="llm_model_select" class="caast-label"><?php esc_html_e( 'AI model', 'my-lesson-editor' ); ?></label>
+                        <select id="llm_model_select" class="caast-select form-input">
                             <option value="deepseek_r1" selected><?php esc_html_e( 'DeepSeek R1', 'my-lesson-editor' ); ?></option>
                             <option value="gpt_4o"><?php esc_html_e( 'Kimi K2', 'my-lesson-editor' ); ?></option>
                             <option value="claude_3_5_sonnet"><?php esc_html_e( 'Qwen 3', 'my-lesson-editor' ); ?></option>
                         </select>
                     </div>
-                    <div class="mb-4">
-                        <label for="book_upload" class="block text-gray-700 text-sm font-bold mb-2"><?php esc_html_e( 'Upload book file (optional)', 'my-lesson-editor' ); ?></label>
-                        <input type="file" id="book_upload" name="book_upload" class="form-input mt-1 block w-full border border-gray-300 rounded-none shadow-sm p-2" accept=".pdf,.txt,.doc,.docx">
-                        <p class="text-gray-500 text-xs mt-1"><?php esc_html_e( 'PDF, TXT, DOC, DOCX — max 4 MB. Not required.', 'my-lesson-editor' ); ?></p>
+                    <div>
+                        <label for="grade_level" class="caast-label"><?php esc_html_e( 'Grade level', 'my-lesson-editor' ); ?></label>
+                        <select id="grade_level" name="grade_level" class="caast-select form-input">
+                            <option value="elementary_school"><?php esc_html_e( 'Elementary School', 'my-lesson-editor' ); ?></option>
+                            <option value="middle_school" selected><?php esc_html_e( 'Middle School', 'my-lesson-editor' ); ?></option>
+                            <option value="high_school"><?php esc_html_e( 'High School', 'my-lesson-editor' ); ?></option>
+                            <option value="college"><?php esc_html_e( 'College', 'my-lesson-editor' ); ?></option>
+                        </select>
                     </div>
-                    <div id="book_upload_status" class="mb-4 text-xs text-gray-600"></div>
+                    <div>
+                        <label for="ai_difficulty_level" class="caast-label"><?php esc_html_e( 'Difficulty level', 'my-lesson-editor' ); ?></label>
+                        <select id="ai_difficulty_level" name="ai_difficulty_level" class="caast-select form-input">
+                            <option value="regular" selected><?php esc_html_e( 'Regular', 'my-lesson-editor' ); ?></option>
+                            <option value="honors"><?php esc_html_e( 'Honors', 'my-lesson-editor' ); ?></option>
+                            <option value="preparatory"><?php esc_html_e( 'Preparatory', 'my-lesson-editor' ); ?></option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="book_upload" class="caast-label"><?php esc_html_e( 'Upload book file (optional)', 'my-lesson-editor' ); ?></label>
+                        <input type="file" id="book_upload" name="book_upload" class="caast-input form-input file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-blue-50 file:text-blue-700 file:text-sm file:font-medium" accept=".pdf,.txt,.doc,.docx">
+                        <p class="caast-meta mt-1"><?php esc_html_e( 'PDF, TXT, DOC, DOCX — max 4 MB. Not required.', 'my-lesson-editor' ); ?></p>
+                    </div>
+                    <div id="book_upload_status" class="caast-meta"></div>
                 </div>
 
-                <div class="mb-6">
-                    <h3 class="text-lg font-semibold text-gray-800 mb-4"><?php esc_html_e( 'Select Content Types to Generate', 'my-lesson-editor' ); ?></h3>
+                <div>
+                    <h3 class="text-sm font-semibold text-slate-800 uppercase tracking-wide mb-4"><?php esc_html_e( 'Content types to generate', 'my-lesson-editor' ); ?></h3>
                     <div class="space-y-3">
-                        <div class="content-type-card bg-blue-50 border border-blue-200 rounded-lg p-3">
+                        <div class="caast-content-type-card content-type-card">
                             <label class="flex items-start space-x-3 cursor-pointer group">
-                                <input type="checkbox" id="task_lesson_plan" class="content-type-checkbox mt-1 h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500" value="lesson_plan" data-task-key="lesson_plan">
+                                <input type="checkbox" id="task_lesson_plan" class="content-type-checkbox mt-1 h-4 w-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500" value="lesson_plan" data-task-key="lesson_plan">
                                 <div class="flex-1">
-                                    <span class="text-sm font-medium text-gray-900 group-hover:text-blue-700"><?php esc_html_e( 'Lesson plan by chapter', 'my-lesson-editor' ); ?></span>
-                                    <p class="text-xs text-gray-600 mt-1"><?php esc_html_e( 'Lesson plans aligned to chapters', 'my-lesson-editor' ); ?></p>
+                                    <span class="text-sm font-medium text-slate-900 group-hover:text-blue-700"><?php esc_html_e( 'Lesson plan by chapter', 'my-lesson-editor' ); ?></span>
+                                    <p class="caast-meta mt-1"><?php esc_html_e( 'Lesson plans aligned to chapters', 'my-lesson-editor' ); ?></p>
                                 </div>
                             </label>
                         </div>
-                        <div class="content-type-card bg-green-50 border border-green-200 rounded-lg p-3">
+                        <div class="caast-content-type-card content-type-card">
                             <label class="flex items-start space-x-3 cursor-pointer group">
-                                <input type="checkbox" id="task_vocabulary" class="content-type-checkbox mt-1 h-4 w-4 text-green-600 border-gray-300 rounded focus:ring-green-500" value="vocabulary" data-task-key="vocabulary">
+                                <input type="checkbox" id="task_vocabulary" class="content-type-checkbox mt-1 h-4 w-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500" value="vocabulary" data-task-key="vocabulary">
                                 <div class="flex-1">
-                                    <span class="text-sm font-medium text-gray-900 group-hover:text-green-700"><?php esc_html_e( 'Vocabulary list', 'my-lesson-editor' ); ?></span>
-                                    <p class="text-xs text-gray-600 mt-1"><?php esc_html_e( 'Key terms per chapter', 'my-lesson-editor' ); ?></p>
+                                    <span class="text-sm font-medium text-slate-900 group-hover:text-blue-700"><?php esc_html_e( 'Vocabulary list', 'my-lesson-editor' ); ?></span>
+                                    <p class="caast-meta mt-1"><?php esc_html_e( 'Key terms per chapter', 'my-lesson-editor' ); ?></p>
                                 </div>
                             </label>
                         </div>
-                        <div class="content-type-card bg-purple-50 border border-purple-200 rounded-lg p-3">
+                        <div class="caast-content-type-card content-type-card">
                             <label class="flex items-start space-x-3 cursor-pointer group">
-                                <input type="checkbox" id="task_flashcards" class="content-type-checkbox mt-1 h-4 w-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500" value="flashcards" data-task-key="flashcards">
+                                <input type="checkbox" id="task_flashcards" class="content-type-checkbox mt-1 h-4 w-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500" value="flashcards" data-task-key="flashcards">
                                 <div class="flex-1">
-                                    <span class="text-sm font-medium text-gray-900 group-hover:text-purple-700"><?php esc_html_e( 'Flashcards', 'my-lesson-editor' ); ?></span>
-                                    <p class="text-xs text-gray-600 mt-1"><?php esc_html_e( 'From vocabulary', 'my-lesson-editor' ); ?></p>
+                                    <span class="text-sm font-medium text-slate-900 group-hover:text-blue-700"><?php esc_html_e( 'Flashcards', 'my-lesson-editor' ); ?></span>
+                                    <p class="caast-meta mt-1"><?php esc_html_e( 'From vocabulary', 'my-lesson-editor' ); ?></p>
                                 </div>
                             </label>
                         </div>
-                        <div class="content-type-card bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                        <div class="caast-content-type-card content-type-card">
                             <label class="flex items-start space-x-3 cursor-pointer group">
-                                <input type="checkbox" id="task_quiz" class="content-type-checkbox mt-1 h-4 w-4 text-yellow-600 border-gray-300 rounded focus:ring-yellow-500" value="quiz" data-task-key="quiz">
+                                <input type="checkbox" id="task_quiz" class="content-type-checkbox mt-1 h-4 w-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500" value="quiz" data-task-key="quiz">
                                 <div class="flex-1">
-                                    <span class="text-sm font-medium text-gray-900 group-hover:text-yellow-700"><?php esc_html_e( 'Quiz by chapter', 'my-lesson-editor' ); ?></span>
-                                    <p class="text-xs text-gray-600 mt-1"><?php esc_html_e( 'Chapter quizzes', 'my-lesson-editor' ); ?></p>
+                                    <span class="text-sm font-medium text-slate-900 group-hover:text-blue-700"><?php esc_html_e( 'Quiz by chapter', 'my-lesson-editor' ); ?></span>
+                                    <p class="caast-meta mt-1"><?php esc_html_e( 'Chapter quizzes', 'my-lesson-editor' ); ?></p>
                                 </div>
                             </label>
                         </div>
-                        <div class="content-type-card bg-red-50 border border-red-200 rounded-lg p-3">
+                        <div class="caast-content-type-card content-type-card">
                             <label class="flex items-start space-x-3 cursor-pointer group">
-                                <input type="checkbox" id="task_midterm" class="content-type-checkbox mt-1 h-4 w-4 text-red-600 border-gray-300 rounded focus:ring-red-500" value="midterm" data-task-key="midterm">
+                                <input type="checkbox" id="task_midterm" class="content-type-checkbox mt-1 h-4 w-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500" value="midterm" data-task-key="midterm">
                                 <div class="flex-1">
-                                    <span class="text-sm font-medium text-gray-900 group-hover:text-red-700"><?php esc_html_e( 'Midterm exam', 'my-lesson-editor' ); ?></span>
-                                    <p class="text-xs text-gray-600 mt-1"><?php esc_html_e( 'Midterm-style assessment', 'my-lesson-editor' ); ?></p>
+                                    <span class="text-sm font-medium text-slate-900 group-hover:text-blue-700"><?php esc_html_e( 'Midterm exam', 'my-lesson-editor' ); ?></span>
+                                    <p class="caast-meta mt-1"><?php esc_html_e( 'Midterm-style assessment', 'my-lesson-editor' ); ?></p>
                                 </div>
                             </label>
                         </div>
-                        <div class="content-type-card bg-indigo-50 border border-indigo-200 rounded-lg p-3">
+                        <div class="caast-content-type-card content-type-card">
                             <label class="flex items-start space-x-3 cursor-pointer group">
-                                <input type="checkbox" id="task_final_exam" class="content-type-checkbox mt-1 h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500" value="final" data-task-key="final_exam">
+                                <input type="checkbox" id="task_final_exam" class="content-type-checkbox mt-1 h-4 w-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500" value="final" data-task-key="final_exam">
                                 <div class="flex-1">
-                                    <span class="text-sm font-medium text-gray-900 group-hover:text-indigo-700"><?php esc_html_e( 'Final exam', 'my-lesson-editor' ); ?></span>
-                                    <p class="text-xs text-gray-600 mt-1"><?php esc_html_e( 'Final assessment', 'my-lesson-editor' ); ?></p>
+                                    <span class="text-sm font-medium text-slate-900 group-hover:text-blue-700"><?php esc_html_e( 'Final exam', 'my-lesson-editor' ); ?></span>
+                                    <p class="caast-meta mt-1"><?php esc_html_e( 'Final assessment', 'my-lesson-editor' ); ?></p>
                                 </div>
                             </label>
                         </div>
                     </div>
-                    <div class="mt-4 p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                    <div class="caast-selection-summary mt-4">
                         <div class="flex items-center justify-between">
-                            <span class="text-sm font-medium text-gray-700"><?php esc_html_e( 'Selected content types', 'my-lesson-editor' ); ?></span>
-                            <span id="selected-count" class="text-sm text-gray-600">0 <?php esc_html_e( 'selected', 'my-lesson-editor' ); ?></span>
+                            <span class="text-sm font-medium text-slate-700"><?php esc_html_e( 'Selected content types', 'my-lesson-editor' ); ?></span>
+                            <span id="selected-count" class="caast-selection-count">0</span>
                         </div>
-                        <div id="selected-types" class="mt-2 text-xs text-gray-600"></div>
+                        <div id="selected-types" class="mt-2 caast-meta"></div>
                     </div>
                 </div>
 
-                <div id="chapters_list" class="mb-6" style="display:none;"></div>
-                <div id="generated_content_container" class="mb-6" style="display:none;"></div>
+                <div id="chapters_list" style="display:none;"></div>
+                <div id="generated_content_container" style="display:none;"></div>
 
-                <div class="mt-6 border-t border-gray-200 pt-6">
-                    <h3 class="text-lg font-semibold text-gray-800 mb-3"><?php esc_html_e( 'n8n automation', 'my-lesson-editor' ); ?></h3>
-                    <p class="text-xs text-gray-600 mb-3"><?php esc_html_e( 'No manual prompt required for this button. Pick content types, then start.', 'my-lesson-editor' ); ?></p>
-                    <button type="button" id="start_full_automation" class="button button-primary bg-blue-600 text-white px-4 py-2 rounded-none hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 w-full">
+                <div class="pt-4 border-t border-slate-100 space-y-3">
+                    <h3 class="text-sm font-semibold text-slate-800"><?php esc_html_e( 'n8n automation', 'my-lesson-editor' ); ?></h3>
+                    <p class="caast-meta"><?php esc_html_e( 'Pick content types above, then start automation — no manual prompt required.', 'my-lesson-editor' ); ?></p>
+                    <button type="button" id="start_full_automation" class="caast-btn caast-btn--primary caast-btn--block">
                         <span class="mle-generate-label"><?php esc_html_e( 'Start Automation Process', 'my-lesson-editor' ); ?></span>
                     </button>
-                    <div id="full_automation_status" class="mt-3 p-3 rounded text-xs text-left min-h-[2.5rem] bg-gray-50 border border-gray-200 text-gray-700"></div>
+                    <div id="full_automation_status" class="caast-status caast-status--neutral text-left"></div>
                 </div>
 
-                <div class="mt-6 border-t border-gray-200 pt-6">
-                    <h3 class="text-lg font-semibold text-gray-800 mb-3"><?php esc_html_e( 'Output preview', 'my-lesson-editor' ); ?></h3>
-                    <label for="final_generated_title" class="block text-gray-700 text-sm font-bold mb-2"><?php esc_html_e( 'Title', 'my-lesson-editor' ); ?></label>
-                    <input type="text" id="final_generated_title" class="form-input mt-1 mb-3 block w-full border border-gray-300 rounded-none shadow-sm p-2" placeholder="<?php esc_attr_e( 'Filled after automation', 'my-lesson-editor' ); ?>">
-                    <label for="final_generated_content" class="block text-gray-700 text-sm font-bold mb-2"><?php esc_html_e( 'Content', 'my-lesson-editor' ); ?></label>
-                    <textarea id="final_generated_content" rows="12" class="output-content-textarea shadow appearance-none border border-gray-300 rounded-none w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline text-sm" placeholder="<?php esc_attr_e( 'n8n response / generated body', 'my-lesson-editor' ); ?>"></textarea>
-                    <button type="button" id="upload_final_content_to_editor" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 w-full mt-3"><?php esc_html_e( 'Load into main editor', 'my-lesson-editor' ); ?></button>
-                    <button type="button" id="save_final_content_as_draft" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 w-full mt-2"><?php esc_html_e( 'Save as new lesson draft', 'my-lesson-editor' ); ?></button>
+                <div class="pt-4 border-t border-slate-100 space-y-3">
+                    <h3 class="text-sm font-semibold text-slate-800"><?php esc_html_e( 'Output preview', 'my-lesson-editor' ); ?></h3>
+                    <label for="final_generated_title" class="caast-label"><?php esc_html_e( 'Title', 'my-lesson-editor' ); ?></label>
+                    <input type="text" id="final_generated_title" class="caast-input form-input" placeholder="<?php esc_attr_e( 'Filled after automation', 'my-lesson-editor' ); ?>">
+                    <label for="final_generated_content" class="caast-label"><?php esc_html_e( 'Content', 'my-lesson-editor' ); ?></label>
+                    <textarea id="final_generated_content" rows="10" class="output-content-textarea caast-input w-full" placeholder="<?php esc_attr_e( 'n8n response / generated body', 'my-lesson-editor' ); ?>"></textarea>
+                    <button type="button" id="upload_final_content_to_editor" class="caast-btn caast-btn--secondary caast-btn--block"><?php esc_html_e( 'Load into main editor', 'my-lesson-editor' ); ?></button>
+                    <button type="button" id="save_final_content_as_draft" class="caast-btn caast-btn--secondary caast-btn--block"><?php esc_html_e( 'Save as new lesson draft', 'my-lesson-editor' ); ?></button>
                 </div>
 
-                <details class="mt-6 border-t border-gray-200 pt-4">
-                    <summary class="text-sm font-semibold text-gray-800 cursor-pointer"><?php esc_html_e( 'Optional: manual LLM prompt', 'my-lesson-editor' ); ?></summary>
-                    <div class="mt-3">
-                        <label for="llm_prompt_title" class="block text-gray-700 text-sm font-bold mb-2"><?php esc_html_e( 'Prompt title', 'my-lesson-editor' ); ?></label>
-                        <input type="text" id="llm_prompt_title" class="form-input mt-1 block w-full border border-gray-300 rounded-none shadow-sm p-2">
-                        <label for="llm_prompt_content" class="block text-gray-700 text-sm font-bold mb-2 mt-3"><?php esc_html_e( 'Prompt body', 'my-lesson-editor' ); ?></label>
-                        <textarea id="llm_prompt_content" class="output-content-textarea border border-gray-300 rounded-none w-full py-2 px-3 text-gray-700 text-sm" rows="6"></textarea>
-                        <button type="button" id="send_prompt_to_llm" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 w-full mt-2"><?php esc_html_e( 'Send prompt to LLM (separate)', 'my-lesson-editor' ); ?></button>
-                        <div id="llm_response" class="response-status-message mt-3 p-3 hidden text-center font-semibold rounded text-xs"></div>
+                <details class="pt-4 border-t border-slate-100">
+                    <summary class="text-sm font-semibold text-slate-800 cursor-pointer"><?php esc_html_e( 'Optional: manual LLM prompt', 'my-lesson-editor' ); ?></summary>
+                    <div class="mt-3 space-y-3">
+                        <label for="llm_prompt_title" class="caast-label"><?php esc_html_e( 'Prompt title', 'my-lesson-editor' ); ?></label>
+                        <input type="text" id="llm_prompt_title" class="caast-input form-input">
+                        <label for="llm_prompt_content" class="caast-label"><?php esc_html_e( 'Prompt body', 'my-lesson-editor' ); ?></label>
+                        <textarea id="llm_prompt_content" class="output-content-textarea caast-input w-full" rows="6"></textarea>
+                        <button type="button" id="send_prompt_to_llm" class="caast-btn caast-btn--secondary caast-btn--block"><?php esc_html_e( 'Send prompt to LLM (separate)', 'my-lesson-editor' ); ?></button>
+                        <div id="llm_response" class="response-status-message caast-status hidden text-center font-semibold"></div>
                     </div>
                 </details>
             </aside>
-        
-        
-        
-        
-        <aside class="w-full lg:w-1/5 bg-white border border-gray-300 rounded-lg p-4 lg:p-6 shadow-md max-h-screen overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
-            <h2 class="text-xl font-semibold text-gray-800 mb-4 mt-6">Generated Drafts Content</h2>
-            <div class="flex flex-col md:flex-row gap-4">
-                <div class="flex-1">
-                    <label for="select_title_ce" class="block text-gray-700 text-sm font-bold mb-2">
-                        Select Title:
-                    </label>
-                    <select id="select_title_ce" class="w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                        <option value="">-- Select Title --</option>
-                        <?php
-                        // Populate with existing lesson_profile posts (drafts and published)
-                        $args = array(
-                            'post_type'      => 'lesson_profile',
-                            'posts_per_page' => -1,
-                            'post_status'    => array( 'publish', 'draft' ),
-                            'orderby'        => 'title',
-                            'order'          => 'ASC',
-                        );
-                        $lesson_posts = new WP_Query( $args );
-                        if ( $lesson_posts->have_posts() ) {
-                            while ( $lesson_posts->have_posts() ) {
-                                $lesson_posts->the_post();
-                                echo '<option value="' . esc_attr( get_the_ID() ) . '">' . esc_html( get_the_title() ) . ' (' . esc_html(get_post_status()) . ')</option>';
-                            }
-                            wp_reset_postdata();
-                        }
-                        ?>
-                    </select>
+
+            <div class="mle-layout-resizer" data-resize="drafts" role="separator" aria-orientation="vertical" aria-label="<?php esc_attr_e( 'Resize lesson plans column', 'my-lesson-editor' ); ?>" tabindex="0"></div>
+
+            <aside class="caast-col caast-col--drafts caast-col-pane hide-scrollbar space-y-3">
+                <h2 class="caast-section-title"><?php esc_html_e( 'Lesson Plans', 'my-lesson-editor' ); ?></h2>
+                <p class="caast-meta"><?php esc_html_e( 'Browse by book title, select lessons under that book, then load or submit to LMS.', 'my-lesson-editor' ); ?></p>
+
+                <div id="mle-lesson-tree" class="mle-lesson-tree" aria-live="polite">
+                    <p class="caast-meta mle-lesson-tree-loading"><?php esc_html_e( 'Loading lesson plans…', 'my-lesson-editor' ); ?></p>
                 </div>
-                <div class="flex-1 hidden" id="draft_selection_container">
-                    <label for="select_draft_ce" class="block text-gray-700 text-sm font-bold mb-2">
-                        Select Draft:
-                    </label>
-                    <select id="select_draft_ce" class="w-full border border-gray-300 rounded-none shadow-sm py-2 px-3 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+
+                <div class="space-y-2 mle-lesson-tree-actions">
+                    <button type="button" id="mle_load_selected_lessons" class="caast-btn caast-btn--primary caast-btn--block">
+                        <?php esc_html_e( 'Load selected into editor', 'my-lesson-editor' ); ?>
+                    </button>
+                    <button type="button" id="mle_submit_selected_lms" class="caast-btn caast-btn--secondary caast-btn--block">
+                        <?php esc_html_e( 'Submit selected to LMS', 'my-lesson-editor' ); ?>
+                    </button>
+                    <p id="mle_lesson_tree_status" class="caast-meta hidden" aria-live="polite"></p>
+                </div>
+
+                <select id="mle_select_title_ce" class="hidden" aria-hidden="true" tabindex="-1">
+                    <option value="">-- Select Title --</option>
+                    <?php
+                    foreach ( my_lesson_editor_query_draft_list_posts() as $lesson_post ) {
+                        printf(
+                            '<option value="%1$d">%2$s (%3$s)</option>',
+                            (int) $lesson_post->ID,
+                            esc_html( $lesson_post->post_title ),
+                            esc_html( $lesson_post->post_status )
+                        );
+                    }
+                    ?>
+                </select>
+                <div class="hidden" id="mle_draft_selection_container">
+                    <label for="mle_select_draft_ce" class="caast-label">Select draft</label>
+                    <select id="mle_select_draft_ce" class="caast-select">
                         <option value="">-- Select Draft --</option>
                         <option value="main"><?php esc_html_e( 'Main lesson body', 'my-lesson-editor' ); ?></option>
                         <option value="draft1">Draft 1 (Agent 1)</option>
@@ -1834,14 +2222,10 @@ function my_lesson_editor_shortcode() {
                         <option value="draft3">Draft 3 (Agent 3)</option>
                     </select>
                 </div>
-                <div class="flex items-end">
-                    <button id="load_content_to_editor_from_draft" class="button button-primary bg-gray-200 text-gray-800 px-4 py-2 rounded-none hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 w-full">Load Content to Editor</button>
-                </div>
-            </div>
-        </aside>
-        </section>
-
-    </main>
+                    <button id="load_content_to_editor_from_draft" type="button" class="caast-btn caast-btn--primary caast-btn--block mle-visually-hidden" aria-hidden="true" tabindex="-1"><?php esc_html_e( 'Load content to editor', 'my-lesson-editor' ); ?></button>
+            </aside>
+    </div>
+    </div>
     <?php
     return ob_get_clean();
 }

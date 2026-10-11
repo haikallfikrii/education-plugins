@@ -80,7 +80,8 @@ jQuery(document).ready(function($) {
         // Support Author + Book contexts safely (Book page uses #book_name).
         var bookName = ($('#automation_book_name').val() || $('#book_name').val() || '').trim();
         var authorName = ($('#author_name').val() || '').trim();
-        var difficultyLevel = $('input[name="difficulty_level"]:checked').val() || 'regular';
+        var difficultyLevel = ($('#difficulty_level_select').val() || $('input[name="difficulty_level"]:checked').val() || 'regular');
+        var gradeLevel = ($('#grade_level').val() || 'middle_school');
 
         if (!bookName || !authorName) {
             $statusDiv.text('Please enter both Book name and Author name.').removeClass('hidden').css('color', 'red');
@@ -100,6 +101,7 @@ jQuery(document).ready(function($) {
             selected_model: selectedModel,
             task_type: 'book_introduction',
             difficulty_level: difficultyLevel,
+            grade_level: gradeLevel,
             selected_tasks: selectedTasks
         };
 
@@ -172,19 +174,17 @@ jQuery(document).ready(function($) {
             // Atur konten editor TinyMCE
             tinymce.get('author_content').setContent(finalGeneratedContent);
 
-            // Atur judul ke kolom post_title
-            $('#post_title').val(finalGeneratedTitle);
+            $('#new_author_name').val(finalGeneratedTitle);
 
             Swal.fire({
                 icon: 'success',
-                title: 'Successfully!',
-                text: 'The generated content was successfully loaded into the main editor.',
+                title: 'Success',
+                text: 'Generated content loaded into the main editor.',
                 confirmButtonText: 'OK'
             });
         } else {
-            // Fallback jika TinyMCE tidak diinisialisasi
             $('#author_content').val(finalGeneratedContent);
-            $('#post_title').val(finalGeneratedTitle);
+            $('#new_author_name').val(finalGeneratedTitle);
 
             Swal.fire({
                 icon: 'success',
@@ -235,19 +235,23 @@ jQuery(document).ready(function($) {
                         // post_type: 'author_profile' // Already defined in PHP handler
                     },
                     success: function(response) {
-                        if (response.success) {
+                        if (response.success && response.data) {
+                            var postId = response.data.post_id;
+                            var postTitle = response.data.post_title || title;
+                            var postStatus = response.data.post_status || 'draft';
+                            upsertAuthorDraftTitleOption(postId, postTitle, postStatus);
+                            $(document).trigger('mae:drafts-changed', [postId]);
                             Swal.fire({
                                 icon: 'success',
-                                title: 'Succeed!',
-                                text: 'Draft saved successfully! ID Post: ' + response.data.post_id,
+                                title: 'Success',
+                                text: 'Draft saved and added to Generated Drafts. Load it from the list to review and publish.',
                                 confirmButtonText: 'OK'
                             });
-                            // Optionally, clear fields or update UI, or refresh the "Select Title" dropdown
                         } else {
                             Swal.fire({
                                 icon: 'error',
-                                title: 'Gagal',
-                                text: 'Error menyimpan draft: ' + (response.data || 'Unknown error'),
+                                title: 'Failed',
+                                text: 'Error saving draft: ' + (response.data || 'Unknown error'),
                                 confirmButtonText: 'OK'
                             });
                         }
@@ -266,77 +270,199 @@ jQuery(document).ready(function($) {
         });
     });
 
-    // Handle "Load Content to Editor" button for existing drafts (from "Select Title" dropdown)
-    // Renamed ID from #load_content_to_editor to #load_content_to_editor_from_draft
-    // in my-author-editor.php to avoid conflict with #upload_final_content_to_editor
-    $(document).on('click', '#load_content_to_editor_from_draft', function() {
-        var selectedPostId = $('#select_title_ce').val(); // This is the post ID
-
-        if (selectedPostId) {
-            $.ajax({
-                url: maeV3EditorAjax.ajaxurl, // Use the general editor AJAX URL
-                type: 'POST',
-                data: {
-                    action: 'mae_v3_load_content', // Action to load existing post content
-                    post_id: selectedPostId,
-                    nonce: maeV3EditorAjax.nonce
-                },
-                success: function(response) {
-                    if (response.success) {
-                        var data = response.data;
-                        $('#post_title').val(data.post_title);
-                        $('#author_subtitle').val(data.author_subtitle);
-                        $('#author_photo_url').val(data.author_photo_url);
-                        if (data.author_photo_url) {
-                            $('#author_photo_preview').html(`<img src=\"${data.author_photo_url}\" class=\"w-full h-auto object-cover rounded-none\" />`).show();
-                        } else {
-                            $('#author_photo_preview').html('').hide();
-                        }
-                        // Update TinyMCE editor for Biography/Description
-                        if (typeof tinymce !== 'undefined' && tinymce.get('author_content')) {
-                            tinymce.get('author_content').setContent(data.post_content); // Using post_content from response
-                        } else {
-                            $('#author_content').val(data.post_content); // Fallback
-                        }
-                        $('#author_category').val(data.author_category).trigger('change'); // Update Select2
-                        $('#author_level').val(data.author_level).trigger('change'); // Update Select2
-                        $('#footer_position').val(data.footer_position);
-                        $('#insert_link').val(data.insert_link);
-                        
-                        Swal.fire({
-                            icon: 'success',
-                            title: 'Succesfully!',
-                            text: 'Content loaded successfully!',
-                            confirmButtonText: 'OK'
-                        });
-
-                    } else {
-                        Swal.fire({
-                            icon: 'error',
-                            title: 'Failed',
-                            text: 'Error loading content: ' + response.data,
-                            confirmButtonText: 'OK'
-                        });
-                    }
-                },
-                error: function(xhr, status, error) {
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Failed',
-                        text: 'AJAX error while loading content: ' + error,
-                        confirmButtonText: 'OK'
-                    });
-                    console.error("AJAX error: ", xhr, status, error);
-                }
-            });
-        } else {
-            Swal.fire({
-                icon: 'warning',
-                title: 'Warning',
-                text: 'Please select a Title to load.',
-                confirmButtonText: 'OK'
-            });
+    function getAuthorEditorAjaxConfig() {
+        if (typeof maeV3EditorAjax !== 'undefined' && maeV3EditorAjax.ajaxurl) {
+            return maeV3EditorAjax;
         }
+        return null;
+    }
+
+    function isAuthorEditorPage() {
+        return $('#author-editor-form').length > 0;
+    }
+
+    function refreshAuthorDraftTitleSelect(selectedId) {
+        if (!isAuthorEditorPage()) {
+            return $.Deferred().resolve().promise();
+        }
+        var ajax = getAuthorEditorAjaxConfig();
+        if (!ajax) {
+            return $.Deferred().reject().promise();
+        }
+        return $.ajax({
+            url: ajax.ajaxurl,
+            type: 'POST',
+            dataType: 'json',
+            data: {
+                action: 'mae_v3_get_draft_titles',
+                nonce: ajax.nonce
+            }
+        }).done(function(response) {
+            if (!response || !response.success || !response.data || !Array.isArray(response.data.drafts)) {
+                return;
+            }
+            var $sel = $('#mae_select_title_ce');
+            if (!$sel.length) {
+                return;
+            }
+            var current = selectedId || $sel.val();
+            var titleCounts = {};
+            response.data.drafts.forEach(function(draft) {
+                var key = (draft.title || '').toLowerCase();
+                titleCounts[key] = (titleCounts[key] || 0) + 1;
+            });
+            $sel.find('option:not(:first)').remove();
+            response.data.drafts.forEach(function(draft) {
+                var label = (draft.title || 'Untitled') + ' (' + ((window.caastWorkflow && window.caastWorkflow.formatStatusLabel) ? window.caastWorkflow.formatStatusLabel(draft.status || 'draft') : (draft.status || 'draft')) + ')';
+                if (titleCounts[(draft.title || '').toLowerCase()] > 1) {
+                    label += ' #' + draft.id;
+                }
+                $sel.append($('<option>', { value: String(draft.id), text: label }));
+            });
+            if (current) {
+                $sel.val(String(current));
+            }
+            if ($sel.val()) {
+                $('#mae_draft_selection_container').removeClass('hidden');
+            }
+        });
+    }
+
+    function upsertAuthorDraftTitleOption(postId, title, status) {
+        if (!isAuthorEditorPage()) {
+            return;
+        }
+        var $sel = $('#mae_select_title_ce');
+        var id = String(postId);
+        var label = (title || 'Untitled') + ' (' + (status || 'draft') + ')';
+        var $existing = $sel.find('option[value="' + id + '"]');
+        if ($existing.length) {
+            $existing.text(label);
+        } else {
+            $sel.append($('<option>', { value: id, text: label }));
+        }
+        $sel.val(id);
+        $('#mae_draft_selection_container').removeClass('hidden');
+        $('#mae_select_draft_ce').val('main');
+    }
+
+    window.maeRefreshAuthorDraftTitles = refreshAuthorDraftTitleSelect;
+
+    function applyAuthorDataToMainEditor(data, postId) {
+        if (!data) {
+            return;
+        }
+        var resolvedId = postId || data.post_id || '';
+        if (resolvedId) {
+            $('#author_post_id').val(resolvedId);
+            $('#selected_author_id').val(String(resolvedId));
+        }
+        $('#new_author_name').val(data.post_title || data.title || '');
+        $('#author_subtitle').val(data.author_subtitle || '');
+        $('#insert_link').val(data.insert_link || '');
+        if (data.author_photo_id) {
+            $('#author_photo_id').val(data.author_photo_id);
+        }
+        if (data.author_photo_url) {
+            $('#author_photo_url').val(data.author_photo_url);
+            $('#author-photo-preview').html('<img src="' + data.author_photo_url + '" class="w-full h-auto object-cover rounded-none" alt="" />').show();
+        } else {
+            $('#author_photo_id').val('');
+            $('#author_photo_url').val('');
+            $('#author-photo-preview').html('').hide();
+        }
+        if (typeof window.maeFillAttachPhotosFromData === 'function') {
+            window.maeFillAttachPhotosFromData(data);
+        } else {
+            for (var n = 1; n <= 3; n++) {
+                var pid = data['attach_photo_' + n + '_id'] || '';
+                var purl = data['attach_photo_' + n + '_url'] || '';
+                $('#attach_photo_' + n + '_id').val(pid);
+                $('#attach_photo_' + n + '_url').val(purl);
+                $('#attach_photo_' + n + '_link').val(data['attach_photo_' + n + '_link'] || '');
+                var $preview = $('#attach-photo-' + n + '-preview');
+                if (purl) {
+                    $preview.html(
+                        '<img src="' + purl + '" alt="Image #' + n + ' Preview" style="max-width: 150px; height: auto; display: inline-block; margin-bottom: 5px;" />' +
+                        '<button type="button" class="remove-attach-photo text-red-500 hover:text-red-700 text-xs mt-1 rounded-none block mx-auto" data-attach-prefix="attach_photo" data-photo-index="' + n + '">Remove Image</button>'
+                    ).show();
+                } else {
+                    $preview.hide().empty();
+                }
+            }
+        }
+        var body = data.post_content || data.author_body_content || data.content || '';
+        if (typeof tinymce !== 'undefined' && tinymce.get('author_content')) {
+            tinymce.get('author_content').setContent(body);
+        } else {
+            $('#author_content').val(body);
+        }
+        if (data.author_category) {
+            $('#author_category').val(data.author_category).trigger('change');
+        }
+        if (data.author_level) {
+            $('#author_level').val(data.author_level).trigger('change');
+        }
+        if (data.placement_category && typeof window.maeSetPlacements === 'function') {
+            window.maeSetPlacements(data.placement_category);
+        } else if (typeof window.maeSyncAttachConfigByPlacement === 'function') {
+            window.maeSyncAttachConfigByPlacement();
+        }
+        var postStatus = data.post_status || 'draft';
+        var submitAction = (window.caastWorkflow && window.caastWorkflow.statusToAction)
+            ? window.caastWorkflow.statusToAction(postStatus)
+            : (postStatus === 'publish' ? 'publish' : (postStatus === 'archive' ? 'archive' : 'draft'));
+        $('#submit_author_action_select').val(submitAction);
+    }
+
+    // Load saved author / draft content into the main editor (mirrors lesson editor flow).
+    $(document).on('click', '#load_content_to_editor_from_draft', function(e) {
+        e.preventDefault();
+        var ajax = getAuthorEditorAjaxConfig();
+        if (!ajax) {
+            console.error('maeV3EditorAjax is not defined.');
+            return;
+        }
+        var selectedPostId = $('#mae_select_title_ce').val();
+        var draftType = ($('#mae_select_draft_ce').val() || 'main').trim();
+
+        if (!selectedPostId) {
+            if (typeof Swal !== 'undefined') {
+                Swal.fire({ icon: 'warning', title: 'Select a title', text: 'Choose an author from the list.' });
+            }
+            return;
+        }
+
+        $.ajax({
+            url: ajax.ajaxurl,
+            type: 'POST',
+            dataType: 'json',
+            data: {
+                action: 'mae_v3_load_draft_content',
+                post_id: selectedPostId,
+                draft_type: draftType || 'main',
+                nonce: ajax.nonce
+            }
+        }).done(function(response) {
+            if (response && response.success && response.data) {
+                applyAuthorDataToMainEditor(response.data, selectedPostId);
+                if (typeof Swal !== 'undefined') {
+                    Swal.fire({ icon: 'success', title: 'Loaded', timer: 1600, showConfirmButton: false });
+                }
+            } else {
+                var err = formatAjaxErrorData(response && response.data);
+                if (typeof Swal !== 'undefined') {
+                    Swal.fire({ icon: 'error', title: 'Failed', text: err });
+                } else {
+                    alert(err);
+                }
+            }
+        }).fail(function(xhr, status, error) {
+            console.error('Load draft AJAX error:', xhr, status, error);
+            if (typeof Swal !== 'undefined') {
+                Swal.fire({ icon: 'error', title: 'Failed', text: error || 'Load failed' });
+            }
+        });
     });
 
     // Initialize Select2 for categories and levels
@@ -410,11 +536,19 @@ jQuery(document).ready(function($) {
     });
 
     // Logic for showing/hiding draft selection based on title selection
-    $('#select_title_ce').on('change', function() {
+    $(document).on('mae:drafts-changed', function(e, selectedId) {
+        refreshAuthorDraftTitleSelect(selectedId);
+    });
+
+    if (isAuthorEditorPage()) {
+        refreshAuthorDraftTitleSelect();
+    }
+
+    $('#mae_select_title_ce').on('change', function() {
         if ($(this).val()) {
-            $('#draft_selection_container').removeClass('hidden');
+            $('#mae_draft_selection_container').removeClass('hidden');
         } else {
-            $('#draft_selection_container').addClass('hidden');
+            $('#mae_draft_selection_container').addClass('hidden');
         }
     });
 

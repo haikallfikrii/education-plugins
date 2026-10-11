@@ -72,3 +72,29 @@
         transform: rotate(360deg);
     }
 }
+
+/* Placement checkbox list */
+.caast-placement-checkboxes .caast-checkbox-row {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 0.5rem;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0.125rem 0 !important;
+    text-align: left !important;
+    cursor: pointer;
+}
+.caast-placement-checkboxes .caast-placement-checkbox {
+    flex: 0 0 auto !important;
+    width: 1rem !important;
+    min-width: 1rem !important;
+    height: 1rem !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+.caast-placement-checkboxes .caast-checkbox-row span {
+    flex: 1 1 auto;
+    text-align: left !important;
+    white-space: normal;
+}

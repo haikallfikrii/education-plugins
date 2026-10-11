@@ -62,7 +62,7 @@ jQuery(document).ready(function($) {
         $('#book_cover_url').val('');
         $('#book-cover-preview img').attr('src', '');
         $('#book-cover-preview').hide();
-        $('#placement_category').val(''); // Changed from footer_position
+        $('.caast-placement-checkbox').prop('checked', false);
         $('#insert_link').val('');
         $('#book_category').val('');
         $('#book_level').val('');
@@ -74,6 +74,93 @@ jQuery(document).ready(function($) {
     function clearAuthorSelection() {
          $('#selected_author_id').val('');
     }
+
+    function myBookEditorResolveActionFromStatus(postStatus) {
+        if (window.caastWorkflow && typeof window.caastWorkflow.statusToAction === 'function') {
+            return window.caastWorkflow.statusToAction(postStatus || 'draft');
+        }
+        if (postStatus === 'publish') {
+            return 'publish';
+        }
+        if (postStatus === 'archive') {
+            return 'archive';
+        }
+        if (postStatus === 'pending') {
+            return 'ready_for_approval';
+        }
+        if (postStatus === 'approved') {
+            return 'approved';
+        }
+        if (postStatus === 'unpublished' || postStatus === 'private') {
+            return 'unpublish';
+        }
+        return 'draft';
+    }
+
+    function myBookEditorSetBookCoverPreview(coverId, coverUrl) {
+        if (coverId && coverUrl) {
+            $('#book_cover_id').val(coverId);
+            $('#book_cover_url').val(coverUrl);
+            $('#book-cover-preview').html(
+                '<img src="' + coverUrl + '" alt="Book Cover Preview" style="max-width: 150px; height: auto; display: inline-block; margin-bottom: 5px;" />' +
+                '<button type="button" class="remove-book-cover text-red-500 hover:text-red-700 text-xs mt-1 rounded-none block mx-auto">Remove Image</button>'
+            ).show();
+        } else {
+            $('#book_cover_id').val('');
+            $('#book_cover_url').val('');
+            $('#book-cover-preview').hide().html('');
+        }
+    }
+
+    window.myBookEditorPopulateForm = function(data) {
+        if (!data) {
+            return;
+        }
+
+        $('#book_post_id').val(data.book_post_id || data.post_id || '0');
+        if (data.book_name || data.title) {
+            $('#new_book_name').val(data.book_name || data.title);
+        }
+        if (typeof data.book_subtitle !== 'undefined') {
+            $('#book_subtitle').val(data.book_subtitle);
+        }
+
+        var bodyContent = data.book_content || data.post_content || data.content || '';
+        if (typeof tinymce !== 'undefined' && tinymce.get('book_content')) {
+            tinymce.get('book_content').setContent(bodyContent);
+        } else if (typeof tinymce !== 'undefined' && tinymce.activeEditor && !tinymce.activeEditor.isHidden()) {
+            tinymce.activeEditor.setContent(bodyContent);
+        } else {
+            $('#book_content').val(bodyContent);
+        }
+
+        myBookEditorSetBookCoverPreview(data.book_cover_id, data.book_cover_url);
+
+        if (typeof data.placement_category !== 'undefined') {
+            var placements = Array.isArray(data.placement_category)
+                ? data.placement_category
+                : (data.placement_category ? [data.placement_category] : []);
+            $('.caast-placement-checkbox').each(function() {
+                $(this).prop('checked', placements.indexOf($(this).val()) !== -1);
+            });
+        }
+        if (typeof data.insert_link !== 'undefined') {
+            $('#insert_link').val(data.insert_link || '');
+        }
+        if (typeof data.book_categories !== 'undefined') {
+            $('#book_category').val(data.book_categories || '');
+        }
+        if (typeof data.book_levels !== 'undefined') {
+            $('#book_level').val(data.book_levels || '');
+        }
+        if (typeof data.associated_author_id !== 'undefined') {
+            $('#selected_author_id').val(data.associated_author_id ? String(data.associated_author_id) : '');
+        }
+
+        if (data.post_status) {
+            $('#submit_book_action_select').val(myBookEditorResolveActionFromStatus(data.post_status));
+        }
+    };
 
 
     // AJAX to load book content when "Submit" next to "Select a book" is clicked
@@ -96,38 +183,11 @@ jQuery(document).ready(function($) {
                 },
                 success: function(response) {
                     if (response.success) {
-                        var data = response.data;
-                        $('#book_post_id').val(data.book_post_id);
-                        $('#new_book_name').val(data.book_name);
-                        $('#book_subtitle').val(data.book_subtitle);
+                        window.myBookEditorPopulateForm(response.data);
 
-                        if (tinymce.get('book_content')) {
-                            tinymce.get('book_content').setContent(data.book_content || '');
-                        } else {
-                            $('#book_content').val(data.book_content || '');
-                        }
-
-                        if (data.book_cover_id && data.book_cover_url) {
-                            $('#book_cover_id').val(data.book_cover_id);
-                            $('#book_cover_url').val(data.book_cover_url);
-                            $('#book-cover-preview img').attr('src', data.book_cover_url);
-                            $('#book-cover-preview').show();
-                        } else {
-                            $('#book_cover_id').val('');
-                            $('#book_cover_url').val('');
-                            $('#book-cover-preview img').attr('src', '');
-                            $('#book-cover-preview').hide();
-                        }
-
-                        $('#placement_category').val(data.placement_category); // Changed from footer_position
-                        $('#insert_link').val(data.insert_link);
-                        $('#book_category').val(data.book_categories);
-                        $('#book_level').val(data.book_levels);
-                        $('#selected_author_id').val(data.associated_author_id || '0');
-
-                        if (data.message) {
-                             if (data.book_post_id === 0) {
-                                alert(data.message);
+                        if (response.data.message) {
+                             if (response.data.book_post_id === 0) {
+                                alert(response.data.message);
                              }
                         }
 
@@ -168,45 +228,50 @@ jQuery(document).ready(function($) {
                 e.preventDefault(); // Prevent form submission if user cancels
             }
         } else if (submitAction === 'placement_action' && submitValue === 'publish_placement') {
+            e.preventDefault();
+            var form = this;
             var selectedBookId = $('#book_post_id').val();
-            var selectedPlacement = $('#placement_category').val();
+            var $checked = $('.caast-placement-checkbox:checked');
 
             if (!selectedBookId || selectedBookId === '0') {
-                e.preventDefault();
                 Swal.fire({
                     icon: 'warning',
-                    title: 'Peringatan',
-                    text: 'Silakan pilih buku terlebih dahulu sebelum menerbitkan ke penempatan.',
+                    title: 'Warning',
+                    text: 'Please select or load a book before publishing to a placement.',
                     confirmButtonText: 'OK'
                 });
                 return;
             }
 
-            if (!selectedPlacement) {
-                e.preventDefault();
+            if (!$checked.length) {
                 Swal.fire({
                     icon: 'warning',
-                    title: 'Peringatan',
-                    text: 'Silakan pilih kategori penempatan terlebih dahulu.',
+                    title: 'Warning',
+                    text: 'Please tick at least one placement.',
                     confirmButtonText: 'OK'
                 });
                 return;
             }
+
+            var placementLabels = $checked.map(function() {
+                return $.trim($(this).closest('label').text());
+            }).get().join(', ');
 
             Swal.fire({
-                title: 'Konfirmasi Publikasi Penempatan',
-                text: "Apakah Anda yakin ingin menerbitkan buku ini ke kategori penempatan '" + selectedPlacement + "'?",
+                title: 'Confirm placement publish',
+                text: 'Publish this book to: ' + placementLabels + '?',
                 icon: 'info',
                 showCancelButton: true,
                 confirmButtonColor: '#3085d6',
                 cancelButtonColor: '#d33',
-                confirmButtonText: 'Ya, Terbitkan!',
-                cancelButtonText: 'Batal'
+                confirmButtonText: 'Yes, publish',
+                cancelButtonText: 'Cancel'
             }).then((result) => {
                 if (result.isConfirmed) {
-                    // Form will submit if confirmed
-                } else {
-                    e.preventDefault(); // Prevent form submission if canceled
+                    // form.submit() does not send the clicked button, so carry its value explicitly.
+                    $(form).find('input[type="hidden"][name="placement_action"]').remove();
+                    $('<input>', { type: 'hidden', name: 'placement_action', value: 'publish_placement' }).appendTo(form);
+                    form.submit();
                 }
             });
         }
@@ -242,5 +307,49 @@ jQuery(document).ready(function($) {
         // $('#load-author-content-btn').trigger('click'); // Uncomment if you want immediate feedback on author selection
     });
 
+    // --- Reusable Upload / Edit / Submit (via MLEUploader) ---
+    if (window.MLEUploader && typeof MLEUploader.attach === 'function' && window.myBookEditorAjax) {
+        var $bookContainer = $('[data-mle-uploader="book"]');
+        if ($bookContainer.length) {
+            window.__mleBookUploader = MLEUploader.attach({
+                container: $bookContainer.get(0),
+                ajaxConfig: { ajaxurl: myBookEditorAjax.ajaxurl, nonce: myBookEditorAjax.nonce },
+                actions: {
+                    extract: 'mbe_extract_text_from_upload',
+                    submit:  'mbe_submit_book_to_wp'
+                },
+                editorId: 'book_content',
+                titleInputId: 'new_book_name',
+                bookNameInputId: 'mbe_source_book_name',
+                previewSourceId: 'final_generated_content',
+                submitExtraFields: function() {
+                    var bookPostId = ($('#book_post_id').val() || '').trim();
+                    return {
+                        book_post_id: bookPostId,
+                        subtitle: ($('#book_subtitle').val() || '').trim(),
+                        force_new_draft: bookPostId ? '0' : '1'
+                    };
+                },
+                onUploaded: function() {
+                    // New file upload should create a separate draft on submit, not overwrite the last saved book.
+                    $('#book_post_id').val('0');
+                },
+                onSubmitted: function(data) {
+                    if (data && data.book_post_id) {
+                        $('#book_post_id').val(data.book_post_id);
+                    }
+                    $(document).trigger('mbe:drafts-changed', [data && data.book_post_id]);
+                }
+            });
+        }
+    }
 
+    // Mirror AI title into source Book Name field when generation finishes.
+    $(document).on('blur change', '#final_generated_title', function() {
+        var v = ($(this).val() || '').trim();
+        var $bn = $('#mbe_source_book_name');
+        if (v && $bn.length && !$bn.val()) {
+            $bn.val(v);
+        }
+    });
 });
